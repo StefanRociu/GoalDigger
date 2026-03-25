@@ -380,7 +380,7 @@ def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.0-flash')
 
         session_count  = len(sessions_data)
         training_count = sum(1 for s in sessions_data if s['session_type'] == 'training')
