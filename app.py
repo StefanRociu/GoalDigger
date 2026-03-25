@@ -378,6 +378,8 @@ def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
         return generate_ai_insights(sport_name, kid_name, sessions_data)
 
     try:
+        import re
+        import time
         from google import genai
         client = genai.Client(api_key=api_key)
 
@@ -445,19 +447,32 @@ Return a JSON object with these fields:
 Return ONLY valid JSON. No markdown, no code fences, no explanation.
 {{"current_level":"...","progress_summary":"...","next_steps":["..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
 
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
+        # Retry up to 3 times to handle transient 429 rate-limit errors
+        response = None
+        last_err  = None
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash',
+                    contents=prompt
+                )
+                break
+            except Exception as e:
+                last_err = e
+                if '429' in str(e) and attempt < 2:
+                    time.sleep(3 * (attempt + 1))   # 3 s, then 6 s
+                else:
+                    raise
+        if response is None:
+            raise last_err
+
         text = response.text.strip()
 
-        if '```' in text:
-            text = text.split('```')[1]
-            if text.startswith('json'):
-                text = text[4:]
-        text = text.strip()
-
-        data = json.loads(text)
+        # Robust JSON extraction — handle markdown fences or stray text
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON object found in Gemini response: {text[:200]}")
+        data = json.loads(json_match.group())
 
         youtube_links = [
             {
