@@ -1,14 +1,14 @@
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
 from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import os
 import json
 from datetime import datetime
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'kidssports-change-this-in-production')
-DATABASE = os.environ.get('DATABASE_PATH', 'kidssports.db')
+app.secret_key = os.environ.get('SECRET_KEY', 'goaldigger-change-this-in-production')
 
 # ---------------------------------------------------------------------------
 # SPORT CATALOGUE
@@ -66,68 +66,120 @@ DEFAULT_SKILLS = ["Technique", "Conditioning", "Tactics", "Coordination", "Endur
 AVATAR_COLORS = ['#6366F1', '#EC4899', '#14B8A6', '#F59E0B', '#8B5CF6', '#06B6D4', '#84CC16', '#EF4444']
 
 # ---------------------------------------------------------------------------
-# DATABASE
+# DATABASE — PostgreSQL helpers
 # ---------------------------------------------------------------------------
 
-def get_db():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+def get_connection():
+    """Return a psycopg2 connection, fixing Railway's postgres:// URL prefix."""
+    url = os.environ.get('DATABASE_URL', '')
+    if not url:
+        raise RuntimeError("DATABASE_URL environment variable is not set.")
+    if url.startswith('postgres://'):
+        url = url.replace('postgres://', 'postgresql://', 1)
+    return psycopg2.connect(url)
+
+def db_query(sql, params=None, one=False):
+    """Execute a SELECT and return dict-style rows."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return cur.fetchone() if one else cur.fetchall()
+    finally:
+        conn.close()
+
+def db_exec(sql, params=None):
+    """Execute a write statement (INSERT/UPDATE/DELETE)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def db_insert(sql, params=None):
+    """Execute an INSERT and return the new row's id."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql + ' RETURNING id', params)
+            row_id = cur.fetchone()[0]
+        conn.commit()
+        return row_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def init_db():
-    with get_db() as conn:
-        conn.executescript('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS kids (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                birth_year INTEGER,
-                avatar_color TEXT DEFAULT '#6366F1',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS sports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                kid_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                icon TEXT DEFAULT '🏅',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (kid_id) REFERENCES kids(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sport_id INTEGER NOT NULL,
-                session_type TEXT NOT NULL,
-                date DATE NOT NULL,
-                skills_practiced TEXT,
-                mood_before INTEGER,
-                mood_after INTEGER,
-                energy_level TEXT,
-                competition_result TEXT,
-                notes TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS ai_insights (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sport_id INTEGER UNIQUE NOT NULL,
-                generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                current_level TEXT,
-                progress_summary TEXT,
-                next_steps TEXT,
-                youtube_links TEXT,
-                FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE
-            );
-        ''')
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS kids (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    birth_year INTEGER,
+                    avatar_color TEXT DEFAULT '#6366F1',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS sports (
+                    id SERIAL PRIMARY KEY,
+                    kid_id INTEGER NOT NULL REFERENCES kids(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    icon TEXT DEFAULT '🏅',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id SERIAL PRIMARY KEY,
+                    sport_id INTEGER NOT NULL REFERENCES sports(id) ON DELETE CASCADE,
+                    session_type TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    skills_practiced TEXT,
+                    mood_before INTEGER,
+                    mood_after INTEGER,
+                    energy_level TEXT,
+                    competition_result TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS ai_insights (
+                    id SERIAL PRIMARY KEY,
+                    sport_id INTEGER UNIQUE NOT NULL REFERENCES sports(id) ON DELETE CASCADE,
+                    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    current_level TEXT,
+                    progress_summary TEXT,
+                    next_steps TEXT,
+                    youtube_links TEXT
+                )
+            ''')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 # ---------------------------------------------------------------------------
 # AUTH HELPERS
@@ -144,34 +196,30 @@ def login_required(f):
 def get_current_user():
     if 'user_id' not in session:
         return None
-    with get_db() as conn:
-        return conn.execute('SELECT * FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+    return db_query('SELECT * FROM users WHERE id = %s', (session['user_id'],), one=True)
 
 def verify_kid_ownership(kid_id):
-    with get_db() as conn:
-        return conn.execute(
-            'SELECT * FROM kids WHERE id = ? AND user_id = ?',
-            (kid_id, session['user_id'])
-        ).fetchone()
+    return db_query(
+        'SELECT * FROM kids WHERE id = %s AND user_id = %s',
+        (kid_id, session['user_id']), one=True
+    )
 
 def verify_sport_ownership(sport_id):
-    with get_db() as conn:
-        return conn.execute('''
-            SELECT sp.*, k.user_id, k.name AS kid_name
-            FROM sports sp
-            JOIN kids k ON sp.kid_id = k.id
-            WHERE sp.id = ? AND k.user_id = ?
-        ''', (sport_id, session['user_id'])).fetchone()
+    return db_query('''
+        SELECT sp.*, k.user_id, k.name AS kid_name, k.id AS kid_id
+        FROM sports sp
+        JOIN kids k ON sp.kid_id = k.id
+        WHERE sp.id = %s AND k.user_id = %s
+    ''', (sport_id, session['user_id']), one=True)
 
 def verify_session_ownership(session_id):
-    with get_db() as conn:
-        return conn.execute('''
-            SELECT se.*, sp.name AS sport_name, k.user_id
-            FROM sessions se
-            JOIN sports sp ON se.sport_id = sp.id
-            JOIN kids k ON sp.kid_id = k.id
-            WHERE se.id = ? AND k.user_id = ?
-        ''', (session_id, session['user_id'])).fetchone()
+    return db_query('''
+        SELECT se.*, sp.name AS sport_name, sp.id AS sport_id, k.user_id
+        FROM sessions se
+        JOIN sports sp ON se.sport_id = sp.id
+        JOIN kids k ON sp.kid_id = k.id
+        WHERE se.id = %s AND k.user_id = %s
+    ''', (session_id, session['user_id']), one=True)
 
 # ---------------------------------------------------------------------------
 # AI INSIGHTS SIMULATION
@@ -243,7 +291,6 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
     sport_skill_list = SPORT_SKILLS.get(sport_name, DEFAULT_SKILLS)
     unpracticed = [s for s in sport_skill_list if s not in skill_counts]
 
-    # Level
     if session_count < 5:
         level, level_detail = "Beginner", "just getting started"
     elif session_count < 12:
@@ -255,7 +302,7 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
     else:
         level, level_detail = "Expert", "operating at an elite level"
 
-    mood_label = {1: "struggling", 2: "below average", 3: "steady", 4: "positive", 5: "very positive"}.get(round(avg_mood), "steady")
+    mood_label   = {1: "struggling", 2: "below average", 3: "steady", 4: "positive", 5: "very positive"}.get(round(avg_mood), "steady")
     trend_phrase = {"improving": "and on an upward trajectory", "dipping": "but facing some recent challenges", "stable": "and consistent"}.get(trend, "and consistent")
 
     progress_summary = (
@@ -270,12 +317,11 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
     elif trend == "dipping":
         progress_summary += f" Consider exploring what's affecting motivation, and try a lighter, fun session."
 
-    # Next steps
     next_steps = []
     if level == "Beginner":
-        next_steps.append(f"Focus on the fundamentals — consistency matters more than intensity right now.")
+        next_steps.append("Focus on the fundamentals — consistency matters more than intensity right now.")
     elif level == "Developing":
-        next_steps.append(f"Introduce structured drills and set small, measurable weekly goals.")
+        next_steps.append("Introduce structured drills and set small, measurable weekly goals.")
     elif level == "Intermediate":
         next_steps.append(f"Working with a coach to refine technique will accelerate progress at this stage.")
     else:
@@ -290,7 +336,7 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
     if trend == "dipping":
         next_steps.append("Mix up the routine — a pressure-free, fun session can reset motivation and restore enthusiasm.")
     elif avg_mood >= 4:
-        next_steps.append(f"High enjoyment levels are a great sign. Channel that energy by introducing new challenges.")
+        next_steps.append("High enjoyment levels are a great sign. Channel that energy by introducing new challenges.")
 
     return {
         "current_level": level,
@@ -310,10 +356,9 @@ def login():
     if request.method == 'POST':
         email    = request.form.get('email', '').strip().lower()
         password = request.form.get('password', '')
-        with get_db() as conn:
-            user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
+        user = db_query('SELECT * FROM users WHERE email = %s', (email,), one=True)
         if user and check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['id']
+            session['user_id']   = user['id']
             session['user_name'] = user['name']
             return redirect(url_for('dashboard'))
         flash('Invalid email or password.', 'error')
@@ -333,16 +378,14 @@ def register():
             flash('Password must be at least 8 characters.', 'error')
         else:
             try:
-                with get_db() as conn:
-                    conn.execute(
-                        'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)',
-                        (name, email, generate_password_hash(password))
-                    )
-                    user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
-                session['user_id']   = user['id']
-                session['user_name'] = user['name']
+                user_id = db_insert(
+                    'INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s)',
+                    (name, email, generate_password_hash(password))
+                )
+                session['user_id']   = user_id
+                session['user_name'] = name
                 return redirect(url_for('dashboard'))
-            except sqlite3.IntegrityError:
+            except psycopg2.errors.UniqueViolation:
                 flash('An account with that email already exists.', 'error')
     return render_template('auth.html', mode='register')
 
@@ -358,28 +401,26 @@ def logout():
 @app.route('/')
 @login_required
 def dashboard():
-    with get_db() as conn:
-        kids = conn.execute(
-            'SELECT * FROM kids WHERE user_id = ? ORDER BY created_at ASC',
-            (session['user_id'],)
-        ).fetchall()
-        kids_data = []
-        for kid in kids:
-            sport_count = conn.execute(
-                'SELECT COUNT(*) FROM sports WHERE kid_id = ?', (kid['id'],)
-            ).fetchone()[0]
-            last_session = conn.execute('''
-                SELECT MAX(se.date) FROM sessions se
-                JOIN sports sp ON se.sport_id = sp.id
-                WHERE sp.kid_id = ?
-            ''', (kid['id'],)).fetchone()[0]
-            kids_data.append({
-                "id": kid['id'], "name": kid['name'],
-                "birth_year": kid['birth_year'],
-                "avatar_color": kid['avatar_color'],
-                "sport_count": sport_count,
-                "last_session": last_session
-            })
+    kids_raw = db_query(
+        'SELECT * FROM kids WHERE user_id = %s ORDER BY created_at ASC',
+        (session['user_id'],)
+    )
+    kids_data = []
+    for kid in kids_raw:
+        sport_count = db_query(
+            'SELECT COUNT(*) FROM sports WHERE kid_id = %s', (kid['id'],), one=True
+        )['count']
+        last_row = db_query('''
+            SELECT MAX(se.date) AS last_date FROM sessions se
+            JOIN sports sp ON se.sport_id = sp.id WHERE sp.kid_id = %s
+        ''', (kid['id'],), one=True)
+        kids_data.append({
+            "id": kid['id'], "name": kid['name'],
+            "birth_year": kid['birth_year'],
+            "avatar_color": kid['avatar_color'],
+            "sport_count": sport_count,
+            "last_session": last_row['last_date'] if last_row else None
+        })
     user = get_current_user()
     return render_template('dashboard.html', kids=kids_data, user=user)
 
@@ -393,16 +434,14 @@ def add_kid():
     if request.method == 'POST':
         name       = request.form.get('name', '').strip()
         birth_year = request.form.get('birth_year', '').strip()
-        color_idx  = hash(name) % len(AVATAR_COLORS)
-        color      = AVATAR_COLORS[color_idx]
+        color      = AVATAR_COLORS[hash(name) % len(AVATAR_COLORS)]
         if not name:
             flash('Name is required.', 'error')
         else:
-            with get_db() as conn:
-                conn.execute(
-                    'INSERT INTO kids (user_id, name, birth_year, avatar_color) VALUES (?, ?, ?, ?)',
-                    (session['user_id'], name, int(birth_year) if birth_year.isdigit() else None, color)
-                )
+            db_insert(
+                'INSERT INTO kids (user_id, name, birth_year, avatar_color) VALUES (%s, %s, %s, %s)',
+                (session['user_id'], name, int(birth_year) if birth_year.isdigit() else None, color)
+            )
             return redirect(url_for('dashboard'))
     return render_template('kid_form.html', action='add')
 
@@ -412,27 +451,26 @@ def kid_profile(kid_id):
     kid = verify_kid_ownership(kid_id)
     if not kid:
         return redirect(url_for('dashboard'))
-    with get_db() as conn:
-        sports = conn.execute(
-            'SELECT * FROM sports WHERE kid_id = ? ORDER BY created_at ASC',
-            (kid_id,)
-        ).fetchall()
-        sports_data = []
-        for sp in sports:
-            session_count = conn.execute(
-                'SELECT COUNT(*) FROM sessions WHERE sport_id = ?', (sp['id'],)
-            ).fetchone()[0]
-            last_session = conn.execute(
-                'SELECT MAX(date) FROM sessions WHERE sport_id = ?', (sp['id'],)
-            ).fetchone()[0]
-            has_insights = conn.execute(
-                'SELECT 1 FROM ai_insights WHERE sport_id = ?', (sp['id'],)
-            ).fetchone()
-            sports_data.append({
-                "id": sp['id'], "name": sp['name'], "icon": sp['icon'],
-                "session_count": session_count, "last_session": last_session,
-                "has_insights": bool(has_insights)
-            })
+    sports_raw = db_query(
+        'SELECT * FROM sports WHERE kid_id = %s ORDER BY created_at ASC', (kid_id,)
+    )
+    sports_data = []
+    for sp in sports_raw:
+        session_count = db_query(
+            'SELECT COUNT(*) FROM sessions WHERE sport_id = %s', (sp['id'],), one=True
+        )['count']
+        last_row = db_query(
+            'SELECT MAX(date) AS last_date FROM sessions WHERE sport_id = %s', (sp['id'],), one=True
+        )
+        has_insights = db_query(
+            'SELECT 1 FROM ai_insights WHERE sport_id = %s', (sp['id'],), one=True
+        )
+        sports_data.append({
+            "id": sp['id'], "name": sp['name'], "icon": sp['icon'],
+            "session_count": session_count,
+            "last_session": last_row['last_date'] if last_row else None,
+            "has_insights": bool(has_insights)
+        })
     age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
     return render_template('kid.html', kid=kid, sports=sports_data, age=age, sport_limit=10)
 
@@ -442,33 +480,31 @@ def add_sport(kid_id):
     kid = verify_kid_ownership(kid_id)
     if not kid:
         return redirect(url_for('dashboard'))
-    with get_db() as conn:
-        current_count = conn.execute(
-            'SELECT COUNT(*) FROM sports WHERE kid_id = ?', (kid_id,)
-        ).fetchone()[0]
+    current_count = db_query(
+        'SELECT COUNT(*) FROM sports WHERE kid_id = %s', (kid_id,), one=True
+    )['count']
     if current_count >= 10:
         flash('A child can have a maximum of 10 sports.', 'error')
         return redirect(url_for('kid_profile', kid_id=kid_id))
     if request.method == 'POST':
-        sport_name = request.form.get('sport_name', '').strip()
+        sport_name  = request.form.get('sport_name', '').strip()
         custom_name = request.form.get('custom_name', '').strip()
         name = custom_name if sport_name == '__custom__' else sport_name
         icon = SPORT_ICONS.get(name, '🏅')
         if not name:
             flash('Please select or enter a sport.', 'error')
         else:
-            with get_db() as conn:
-                existing = conn.execute(
-                    'SELECT 1 FROM sports WHERE kid_id = ? AND name = ?', (kid_id, name)
-                ).fetchone()
-                if existing:
-                    flash(f'{kid["name"]} already has {name} added.', 'error')
-                else:
-                    conn.execute(
-                        'INSERT INTO sports (kid_id, name, icon) VALUES (?, ?, ?)',
-                        (kid_id, name, icon)
-                    )
-                    return redirect(url_for('kid_profile', kid_id=kid_id))
+            existing = db_query(
+                'SELECT 1 FROM sports WHERE kid_id = %s AND name = %s', (kid_id, name), one=True
+            )
+            if existing:
+                flash(f'{kid["name"]} already has {name} added.', 'error')
+            else:
+                db_insert(
+                    'INSERT INTO sports (kid_id, name, icon) VALUES (%s, %s, %s)',
+                    (kid_id, name, icon)
+                )
+                return redirect(url_for('kid_profile', kid_id=kid_id))
     return render_template('sport_form.html', kid=kid, sports_list=SPORTS, current_count=current_count)
 
 # ---------------------------------------------------------------------------
@@ -481,15 +517,14 @@ def sport_detail(sport_id):
     sport = verify_sport_ownership(sport_id)
     if not sport:
         return redirect(url_for('dashboard'))
-    with get_db() as conn:
-        sessions_raw = conn.execute(
-            'SELECT * FROM sessions WHERE sport_id = ? ORDER BY date DESC, created_at DESC',
-            (sport_id,)
-        ).fetchall()
-        insights = conn.execute(
-            'SELECT * FROM ai_insights WHERE sport_id = ?', (sport_id,)
-        ).fetchone()
-        kid = conn.execute('SELECT * FROM kids WHERE id = ?', (sport['kid_id'],)).fetchone()
+    sessions_raw = db_query(
+        'SELECT * FROM sessions WHERE sport_id = %s ORDER BY date DESC, created_at DESC',
+        (sport_id,)
+    )
+    insights_raw = db_query(
+        'SELECT * FROM ai_insights WHERE sport_id = %s', (sport_id,), one=True
+    )
+    kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
 
     sessions_list = []
     for s in sessions_raw:
@@ -507,20 +542,20 @@ def sport_detail(sport_id):
         })
 
     insights_data = None
-    if insights:
+    if insights_raw:
         try:
             insights_data = {
-                "current_level": insights['current_level'],
-                "progress_summary": insights['progress_summary'],
-                "next_steps": json.loads(insights['next_steps']),
-                "youtube_links": json.loads(insights['youtube_links']),
-                "generated_at": insights['generated_at']
+                "current_level":    insights_raw['current_level'],
+                "progress_summary": insights_raw['progress_summary'],
+                "next_steps":       json.loads(insights_raw['next_steps']),
+                "youtube_links":    json.loads(insights_raw['youtube_links']),
+                "generated_at":     insights_raw['generated_at'].strftime('%Y-%m-%d %H:%M') if insights_raw['generated_at'] else ''
             }
         except Exception:
             insights_data = None
 
     mood_scores = [s['mood_after'] for s in sessions_list if s['mood_after']]
-    avg_mood = round(sum(mood_scores) / len(mood_scores), 1) if mood_scores else None
+    avg_mood    = round(sum(mood_scores) / len(mood_scores), 1) if mood_scores else None
 
     return render_template(
         'sport.html',
@@ -539,9 +574,7 @@ def add_session(sport_id):
     sport = verify_sport_ownership(sport_id)
     if not sport:
         return redirect(url_for('dashboard'))
-    kid = None
-    with get_db() as conn:
-        kid = conn.execute('SELECT * FROM kids WHERE id = ?', (sport['kid_id'],)).fetchone()
+    kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
 
     if request.method == 'POST':
         session_type = request.form.get('session_type', 'training')
@@ -553,7 +586,6 @@ def add_session(sport_id):
         comp_result  = request.form.get('competition_result') or None
         notes        = request.form.get('notes', '').strip() or None
 
-        # Ensure skills_practiced is stored as JSON
         try:
             skills_list = json.loads(skills_raw)
             if not isinstance(skills_list, list):
@@ -564,19 +596,18 @@ def add_session(sport_id):
         if not date_str:
             flash('Please select a date.', 'error')
         else:
-            with get_db() as conn:
-                conn.execute('''
-                    INSERT INTO sessions
-                    (sport_id, session_type, date, skills_practiced, mood_before,
-                     mood_after, energy_level, competition_result, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    sport_id, session_type, date_str,
-                    json.dumps(skills_list),
-                    int(mood_before) if mood_before else None,
-                    int(mood_after) if mood_after else None,
-                    energy_level, comp_result, notes
-                ))
+            db_insert('''
+                INSERT INTO sessions
+                (sport_id, session_type, date, skills_practiced, mood_before,
+                 mood_after, energy_level, competition_result, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (
+                sport_id, session_type, date_str,
+                json.dumps(skills_list),
+                int(mood_before) if mood_before else None,
+                int(mood_after)  if mood_after  else None,
+                energy_level, comp_result, notes
+            ))
             return redirect(url_for('sport_detail', sport_id=sport_id))
 
     return render_template(
@@ -593,8 +624,7 @@ def delete_session(session_id):
     if not s:
         return redirect(url_for('dashboard'))
     sport_id = s['sport_id']
-    with get_db() as conn:
-        conn.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
+    db_exec('DELETE FROM sessions WHERE id = %s', (session_id,))
     return redirect(url_for('sport_detail', sport_id=sport_id))
 
 # ---------------------------------------------------------------------------
@@ -608,33 +638,29 @@ def generate_insights(sport_id):
     if not sport:
         return jsonify({"error": "Not found"}), 404
 
-    with get_db() as conn:
-        sessions_raw = conn.execute(
-            'SELECT * FROM sessions WHERE sport_id = ? ORDER BY date ASC',
-            (sport_id,)
-        ).fetchall()
-        kid = conn.execute('SELECT * FROM kids WHERE id = ?', (sport['kid_id'],)).fetchone()
-
+    sessions_raw = db_query(
+        'SELECT * FROM sessions WHERE sport_id = %s ORDER BY date ASC', (sport_id,)
+    )
+    kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
     sessions_data = [dict(s) for s in sessions_raw]
     insights = generate_ai_insights(sport['name'], kid['name'], sessions_data)
 
-    with get_db() as conn:
-        conn.execute('''
-            INSERT INTO ai_insights (sport_id, current_level, progress_summary, next_steps, youtube_links)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(sport_id) DO UPDATE SET
-                current_level    = excluded.current_level,
-                progress_summary = excluded.progress_summary,
-                next_steps       = excluded.next_steps,
-                youtube_links    = excluded.youtube_links,
-                generated_at     = CURRENT_TIMESTAMP
-        ''', (
-            sport_id,
-            insights['current_level'],
-            insights['progress_summary'],
-            json.dumps(insights['next_steps']),
-            json.dumps(insights['youtube_links'])
-        ))
+    db_exec('''
+        INSERT INTO ai_insights (sport_id, current_level, progress_summary, next_steps, youtube_links)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (sport_id) DO UPDATE SET
+            current_level    = EXCLUDED.current_level,
+            progress_summary = EXCLUDED.progress_summary,
+            next_steps       = EXCLUDED.next_steps,
+            youtube_links    = EXCLUDED.youtube_links,
+            generated_at     = CURRENT_TIMESTAMP
+    ''', (
+        sport_id,
+        insights['current_level'],
+        insights['progress_summary'],
+        json.dumps(insights['next_steps']),
+        json.dumps(insights['youtube_links'])
+    ))
 
     insights['generated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M')
     return jsonify(insights)
@@ -660,9 +686,11 @@ def format_date(val):
     if not val:
         return '—'
     try:
+        if hasattr(val, 'strftime'):
+            return val.strftime('%d %b %Y')
         return datetime.strptime(str(val), '%Y-%m-%d').strftime('%d %b %Y')
     except Exception:
-        return val
+        return str(val)
 
 # ---------------------------------------------------------------------------
 # ENTRY POINT
