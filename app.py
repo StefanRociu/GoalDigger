@@ -452,27 +452,10 @@ Return a JSON object with these fields:
 Return ONLY valid JSON. No markdown, no code fences, no explanation.
 {{"current_level":"...","progress_summary":"...","next_steps":["..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
 
-        # Retry up to 3 times; wait longer to clear the 15-RPM free-tier window
-        response = None
-        last_err  = None
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=prompt
-                )
-                break
-            except Exception as e:
-                last_err = e
-                err_str = str(e).lower()
-                is_rate_limit = '429' in str(e) or 'quota' in err_str or 'too many' in err_str
-                if is_rate_limit and attempt < 2:
-                    time.sleep(15 * (attempt + 1))   # 15 s, then 30 s
-                else:
-                    raise
-        if response is None:
-            raise last_err
-
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt
+        )
         text = response.text.strip()
 
         # Robust JSON extraction — handle markdown fences or stray text
@@ -538,25 +521,10 @@ Be direct and actionable — what should they focus on next practice?
 Return JSON only. No markdown, no explanation.
 {{"tips": ["tip 1", "tip 2", "tip 3"]}}"""
 
-        response = None
-        last_err  = None
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=prompt
-                )
-                break
-            except Exception as e:
-                last_err = e
-                err_str = str(e).lower()
-                is_rate_limit = '429' in str(e) or 'quota' in err_str or 'too many' in err_str
-                if is_rate_limit and attempt < 2:
-                    time.sleep(15 * (attempt + 1))   # 15 s, then 30 s
-                else:
-                    raise
-        if response is None:
-            raise last_err
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt
+        )
 
         text = response.text.strip()
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -919,32 +887,41 @@ def edit_session(session_id):
 @app.route('/sessions/<int:session_id>/tip', methods=['POST'])
 @login_required
 def session_tip(session_id):
-    s = verify_session_ownership(session_id)
-    if not s:
-        return jsonify({"error": "Not found"}), 404
-    sport = db_query('SELECT * FROM sports WHERE id = %s', (s['sport_id'],), one=True)
-    kid   = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
-    skills = []
-    if s['skills_practiced']:
-        try:
-            skills = json.loads(s['skills_practiced'])
-        except Exception:
-            skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
-    session_data = {
-        'session_type':      s['session_type'],
-        'date':              str(s['date']),
-        'notes':             s['notes'],
-        'skills':            skills,
-        'mood_after':        s['mood_after'],
-        'energy_level':      s['energy_level'],
-        'competition_result': s['competition_result'],
-    }
-    kid_age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
-    result  = generate_session_tip_gemini(sport['name'], kid['name'], kid_age, session_data)
-    if result.get('tips'):
-        db_exec('UPDATE sessions SET ai_feedback = %s WHERE id = %s',
-                (json.dumps(result['tips']), session_id))
-    return jsonify(result)
+    import logging
+    try:
+        s = verify_session_ownership(session_id)
+        if not s:
+            return jsonify({"tips": [], "error": "Session not found"}), 404
+        sport = db_query('SELECT * FROM sports WHERE id = %s', (s['sport_id'],), one=True)
+        if not sport:
+            return jsonify({"tips": [], "error": "Sport not found"}), 404
+        kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
+        if not kid:
+            return jsonify({"tips": [], "error": "Kid not found"}), 404
+        skills = []
+        if s['skills_practiced']:
+            try:
+                skills = json.loads(s['skills_practiced'])
+            except Exception:
+                skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
+        session_data = {
+            'session_type':       s['session_type'],
+            'date':               str(s['date']),
+            'notes':              s['notes'],
+            'skills':             skills,
+            'mood_after':         s['mood_after'],
+            'energy_level':       s['energy_level'],
+            'competition_result': s['competition_result'],
+        }
+        kid_age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
+        result  = generate_session_tip_gemini(sport['name'], kid['name'], kid_age, session_data)
+        if result.get('tips'):
+            db_exec('UPDATE sessions SET ai_feedback = %s WHERE id = %s',
+                    (json.dumps(result['tips']), session_id))
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"session_tip route error: {e}")
+        return jsonify({"tips": [], "error": str(e)[:150]}), 500
 
 # ---------------------------------------------------------------------------
 # ROUTES — AI INSIGHTS
