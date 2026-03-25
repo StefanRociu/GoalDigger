@@ -176,8 +176,13 @@ def init_db():
                     energy_level TEXT,
                     competition_result TEXT,
                     notes TEXT,
+                    ai_feedback TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+            ''')
+            # Migration: add ai_feedback column to existing tables
+            cur.execute('''
+                ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ai_feedback TEXT
             ''')
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS ai_insights (
@@ -494,6 +499,72 @@ Return ONLY valid JSON. No markdown, no code fences, no explanation.
         logging.error(f"Gemini API error: {e}")
         return generate_ai_insights(sport_name, kid_name, sessions_data)
 
+def generate_session_tip_gemini(sport_name, kid_name, kid_age, session_data):
+    """Generate a quick AI coaching tip for a single session."""
+    import logging, re, time
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        return {"tips": ["Add a GEMINI_API_KEY to unlock per-session coaching tips."]}
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+
+        stype       = session_data.get('session_type', 'training')
+        date        = session_data.get('date', '')
+        notes       = session_data.get('notes') or ''
+        skills      = session_data.get('skills') or []
+        mood_after  = session_data.get('mood_after')
+        energy      = session_data.get('energy_level') or ''
+        comp_result = session_data.get('competition_result') or ''
+        age_str     = f", {kid_age} years old" if kid_age else ""
+
+        prompt = f"""You are a youth sports coach reviewing a single {stype} session.
+
+Child: {kid_name}{age_str}
+Sport: {sport_name}
+Date: {date}
+Session type: {stype}
+{f"Result: {comp_result}" if comp_result else ""}
+Skills practiced: {', '.join(skills) if skills else 'not recorded'}
+{f"Mood after: {mood_after}/5" if mood_after else ""}
+{f"Energy: {energy}" if energy else ""}
+{f'Parent observation: "{notes}"' if notes else ""}
+
+Give 2-3 brief, specific coaching tips based on what happened in this session.
+Be direct and actionable — what should they focus on next practice?
+
+Return JSON only. No markdown, no explanation.
+{{"tips": ["tip 1", "tip 2", "tip 3"]}}"""
+
+        response = None
+        last_err  = None
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash',
+                    contents=prompt
+                )
+                break
+            except Exception as e:
+                last_err = e
+                if '429' in str(e) and attempt < 2:
+                    time.sleep(3 * (attempt + 1))
+                else:
+                    raise
+        if response is None:
+            raise last_err
+
+        text = response.text.strip()
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON in response: {text[:200]}")
+        data = json.loads(json_match.group())
+        return {"tips": data.get("tips", [])}
+
+    except Exception as e:
+        logging.error(f"Session tip Gemini error: {e}")
+        return {"tips": [], "error": str(e)}
+
 # ---------------------------------------------------------------------------
 # ROUTES — AUTH
 # ---------------------------------------------------------------------------
@@ -683,11 +754,17 @@ def sport_detail(sport_id):
                 skills = json.loads(s['skills_practiced'])
             except Exception:
                 skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
+        ai_tips = []
+        if s.get('ai_feedback'):
+            try:
+                ai_tips = json.loads(s['ai_feedback'])
+            except Exception:
+                ai_tips = []
         sessions_list.append({
             "id": s['id'], "session_type": s['session_type'], "date": s['date'],
             "skills": skills, "mood_before": s['mood_before'], "mood_after": s['mood_after'],
             "energy_level": s['energy_level'], "competition_result": s['competition_result'],
-            "notes": s['notes']
+            "notes": s['notes'], "ai_tips": ai_tips
         })
 
     insights_data = None
@@ -775,6 +852,93 @@ def delete_session(session_id):
     sport_id = s['sport_id']
     db_exec('DELETE FROM sessions WHERE id = %s', (session_id,))
     return redirect(url_for('sport_detail', sport_id=sport_id))
+
+@app.route('/sessions/<int:session_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_session(session_id):
+    s = verify_session_ownership(session_id)
+    if not s:
+        return redirect(url_for('dashboard'))
+    sport = db_query('SELECT * FROM sports WHERE id = %s', (s['sport_id'],), one=True)
+    kid   = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
+
+    if request.method == 'POST':
+        session_type = request.form.get('session_type', 'training')
+        date_str     = request.form.get('date', '')
+        skills_raw   = request.form.get('skills_practiced', '[]')
+        mood_before  = request.form.get('mood_before') or None
+        mood_after   = request.form.get('mood_after') or None
+        energy_level = request.form.get('energy_level') or None
+        comp_result  = request.form.get('competition_result') or None
+        notes        = request.form.get('notes', '').strip() or None
+        try:
+            skills_list = json.loads(skills_raw)
+            if not isinstance(skills_list, list):
+                skills_list = [sk.strip() for sk in skills_raw.split(',') if sk.strip()]
+        except Exception:
+            skills_list = [sk.strip() for sk in skills_raw.split(',') if sk.strip()]
+        if not date_str:
+            flash('Please select a date.', 'error')
+        else:
+            db_exec('''
+                UPDATE sessions SET
+                    session_type = %s, date = %s, skills_practiced = %s,
+                    mood_before = %s, mood_after = %s, energy_level = %s,
+                    competition_result = %s, notes = %s
+                WHERE id = %s
+            ''', (
+                session_type, date_str, json.dumps(skills_list),
+                int(mood_before) if mood_before else None,
+                int(mood_after)  if mood_after  else None,
+                energy_level, comp_result, notes, session_id
+            ))
+            return redirect(url_for('sport_detail', sport_id=s['sport_id']))
+
+    existing_skills = []
+    if s['skills_practiced']:
+        try:
+            existing_skills = json.loads(s['skills_practiced'])
+        except Exception:
+            existing_skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
+
+    return render_template(
+        'session_form.html',
+        sport=sport, kid=kid,
+        skill_suggestions=SPORT_SKILLS.get(sport['name'], DEFAULT_SKILLS),
+        today=str(s['date']),
+        edit_session=s,
+        existing_skills=existing_skills
+    )
+
+@app.route('/sessions/<int:session_id>/tip', methods=['POST'])
+@login_required
+def session_tip(session_id):
+    s = verify_session_ownership(session_id)
+    if not s:
+        return jsonify({"error": "Not found"}), 404
+    sport = db_query('SELECT * FROM sports WHERE id = %s', (s['sport_id'],), one=True)
+    kid   = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
+    skills = []
+    if s['skills_practiced']:
+        try:
+            skills = json.loads(s['skills_practiced'])
+        except Exception:
+            skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
+    session_data = {
+        'session_type':      s['session_type'],
+        'date':              str(s['date']),
+        'notes':             s['notes'],
+        'skills':            skills,
+        'mood_after':        s['mood_after'],
+        'energy_level':      s['energy_level'],
+        'competition_result': s['competition_result'],
+    }
+    kid_age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
+    result  = generate_session_tip_gemini(sport['name'], kid['name'], kid_age, session_data)
+    if result.get('tips'):
+        db_exec('UPDATE sessions SET ai_feedback = %s WHERE id = %s',
+                (json.dumps(result['tips']), session_id))
+    return jsonify(result)
 
 # ---------------------------------------------------------------------------
 # ROUTES — AI INSIGHTS
