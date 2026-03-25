@@ -371,8 +371,10 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
 
 def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
     """Generate insights via Google Gemini. Falls back to simulation if unavailable."""
+    import logging
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
+        logging.warning("GEMINI_API_KEY not set — using simulation fallback")
         return generate_ai_insights(sport_name, kid_name, sessions_data)
 
     try:
@@ -380,9 +382,9 @@ def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
 
-        session_count   = len(sessions_data)
-        training_count  = sum(1 for s in sessions_data if s['session_type'] == 'training')
-        comp_count      = sum(1 for s in sessions_data if s['session_type'] == 'competition')
+        session_count  = len(sessions_data)
+        training_count = sum(1 for s in sessions_data if s['session_type'] == 'training')
+        comp_count     = sum(1 for s in sessions_data if s['session_type'] == 'competition')
 
         all_skills = []
         for s in sessions_data:
@@ -399,42 +401,61 @@ def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
         mood_scores = [s['mood_after'] for s in sessions_data if s['mood_after']]
         avg_mood    = round(sum(mood_scores) / len(mood_scores), 1) if mood_scores else None
 
-        recent_notes = [s['notes'] for s in sessions_data[-5:] if s['notes']]
-        comp_results = [s['competition_result'] for s in sessions_data if s['competition_result']]
+        # Build a detailed session-by-session log so Gemini sees everything
+        session_log = []
+        for s in sessions_data[-10:]:
+            entry = f"[{s['date']} · {s['session_type'].title()}]"
+            if s.get('skills_practiced'):
+                try:
+                    skills = json.loads(s['skills_practiced'])
+                except Exception:
+                    skills = []
+                if skills:
+                    entry += f" Skills: {', '.join(skills)}."
+            if s.get('mood_after'):
+                entry += f" Mood after: {s['mood_after']}/5."
+            if s.get('energy_level'):
+                entry += f" Energy: {s['energy_level']}."
+            if s.get('competition_result'):
+                entry += f" Result: {s['competition_result']}."
+            if s.get('notes'):
+                entry += f" Observation: \"{s['notes']}\""
+            session_log.append(entry)
 
         age_str = f", {kid_age} years old" if kid_age else ""
 
-        prompt = f"""You are an experienced youth sports development coach analysing a child's athletic progress.
+        prompt = f"""You are an experienced youth sports development coach. A parent has been logging their child's training and you need to provide a personalised progress report.
+
+CRITICAL: The parent's written observations are the most important input. Read them carefully and make your analysis directly address what they described. Never give generic advice — be specific to this child's actual situation.
 
 Child: {kid_name}{age_str}
 Sport: {sport_name}
-Total sessions logged: {session_count} ({training_count} training, {comp_count} competitions)
-Skills practiced (with frequency): {json.dumps(skill_counts) if skill_counts else 'None recorded yet'}
-Average mood after sessions: {f'{avg_mood}/5' if avg_mood else 'Not recorded'} (1=very low, 5=very high)
-Competition results: {', '.join(comp_results) if comp_results else 'No competitions yet'}
-Recent coach/parent observations:
-{chr(10).join(f'- {note}' for note in recent_notes) if recent_notes else '- No written observations yet'}
+Total sessions: {session_count} ({training_count} training, {comp_count} competitions)
+Skills practiced: {', '.join(f'{k} ({v}x)' for k, v in skill_counts.items()) if skill_counts else 'not recorded'}
+Average mood after sessions: {f'{avg_mood}/5' if avg_mood else 'not recorded'}
 
-Analyse this data and return a JSON object with exactly these fields:
+Session log:
+{chr(10).join(session_log) if session_log else '- No sessions yet'}
+
+Return a JSON object with these fields:
 - "current_level": one of Beginner / Developing / Intermediate / Advanced / Expert
-- "progress_summary": 2-3 sentences summarising progress, patterns, and mood trends. Be specific, warm, and honest.
-- "next_steps": array of 3-4 concrete, actionable recommendations for the next 2-4 weeks
-- "youtube_search_queries": array of 3 objects, each with "title" (short display label) and "search_query" (YouTube search string)
+- "progress_summary": 2-3 sentences referencing specific observations. Warm but honest.
+- "next_steps": 3-4 recommendations that directly address what was observed. Concrete and actionable within 2 weeks.
+- "youtube_search_queries": 3 objects with "title" and "search_query". Make these specific to the issues observed.
 
-Return ONLY valid JSON. No markdown, no explanation, no code blocks.
-
-Example:
-{{"current_level":"Developing","progress_summary":"...","next_steps":["...","...","..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
+Return ONLY valid JSON. No markdown, no code fences, no explanation.
+{{"current_level":"...","progress_summary":"...","next_steps":["..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
 
         response = model.generate_content(prompt)
         text = response.text.strip()
 
-        # Strip markdown code fences if Gemini wraps the output
-        if text.startswith('```'):
+        if '```' in text:
             text = text.split('```')[1]
             if text.startswith('json'):
                 text = text[4:]
-        data = json.loads(text.strip())
+        text = text.strip()
+
+        data = json.loads(text)
 
         youtube_links = [
             {
@@ -446,14 +467,14 @@ Example:
         ]
 
         return {
-            "current_level":    data.get("current_level", "Developing"),
+            "current_level":    data.get("current_level", "Beginner"),
             "progress_summary": data.get("progress_summary", ""),
             "next_steps":       data.get("next_steps", []),
             "youtube_links":    youtube_links
         }
 
-    except Exception:
-        # Any failure — network, parse error, quota — falls back to simulation
+    except Exception as e:
+        logging.error(f"Gemini API error: {e}")
         return generate_ai_insights(sport_name, kid_name, sessions_data)
 
 # ---------------------------------------------------------------------------
