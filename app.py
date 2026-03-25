@@ -452,7 +452,7 @@ Return a JSON object with these fields:
 Return ONLY valid JSON. No markdown, no code fences, no explanation.
 {{"current_level":"...","progress_summary":"...","next_steps":["..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
 
-        # Retry up to 3 times to handle transient 429 rate-limit errors
+        # Retry up to 3 times; wait longer to clear the 15-RPM free-tier window
         response = None
         last_err  = None
         for attempt in range(3):
@@ -464,8 +464,10 @@ Return ONLY valid JSON. No markdown, no code fences, no explanation.
                 break
             except Exception as e:
                 last_err = e
-                if '429' in str(e) and attempt < 2:
-                    time.sleep(3 * (attempt + 1))   # 3 s, then 6 s
+                err_str = str(e).lower()
+                is_rate_limit = '429' in str(e) or 'quota' in err_str or 'too many' in err_str
+                if is_rate_limit and attempt < 2:
+                    time.sleep(15 * (attempt + 1))   # 15 s, then 30 s
                 else:
                     raise
         if response is None:
@@ -547,8 +549,10 @@ Return JSON only. No markdown, no explanation.
                 break
             except Exception as e:
                 last_err = e
-                if '429' in str(e) and attempt < 2:
-                    time.sleep(3 * (attempt + 1))
+                err_str = str(e).lower()
+                is_rate_limit = '429' in str(e) or 'quota' in err_str or 'too many' in err_str
+                if is_rate_limit and attempt < 2:
+                    time.sleep(15 * (attempt + 1))   # 15 s, then 30 s
                 else:
                     raise
         if response is None:
@@ -563,7 +567,9 @@ Return JSON only. No markdown, no explanation.
 
     except Exception as e:
         logging.error(f"Session tip Gemini error: {e}")
-        return {"tips": [], "error": str(e)}
+        err_str = str(e).lower()
+        is_rate_limit = '429' in str(e) or 'quota' in err_str or 'too many' in err_str
+        return {"tips": [], "rate_limited": is_rate_limit, "error": str(e)[:150]}
 
 # ---------------------------------------------------------------------------
 # ROUTES — AUTH

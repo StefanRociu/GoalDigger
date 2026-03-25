@@ -428,12 +428,15 @@
         ).join('');
         tipList.classList.remove('hidden');
         btn.classList.add('hidden');
+      } else if (data.rate_limited) {
+        btnText.textContent = 'Rate limit — try in a minute';
+        btn.disabled = false;
       } else {
-        btnText.textContent = 'Try again';
+        btnText.textContent = data.error ? `⚠ ${data.error.slice(0, 60)}` : 'Try again';
         btn.disabled = false;
       }
     } catch (e) {
-      btnText.textContent = 'Try again';
+      btnText.textContent = `⚠ ${e.message}`;
       btn.disabled = false;
     }
   }
