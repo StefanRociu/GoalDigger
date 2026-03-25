@@ -1,0 +1,240 @@
+{% extends 'base.html' %}
+{% block title %}Log Session — GoalDigger{% endblock %}
+
+{% block content %}
+<div class="px-4 pt-6 pb-8">
+  <a href="{{ url_for('sport_detail', sport_id=sport.id) }}"
+     class="inline-flex items-center gap-1.5 text-sm text-slate-500 mb-6">
+    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+    </svg>
+    {{ sport.name }}
+  </a>
+
+  <h1 class="text-2xl font-bold text-slate-800 mb-1">Log a session</h1>
+  <p class="text-slate-400 text-sm mb-6">{{ kid.name }} · {{ sport.icon }} {{ sport.name }}</p>
+
+  <form method="POST" class="space-y-6" id="sessionForm">
+
+    <!-- 1. Type -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-3">Type</label>
+      <div class="grid grid-cols-2 gap-3">
+        <label class="cursor-pointer">
+          <input type="radio" name="session_type" value="training" checked class="sr-only peer" />
+          <div class="flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-slate-200
+                      bg-white font-semibold text-sm text-slate-600
+                      peer-checked:border-indigo-500 peer-checked:bg-indigo-50 peer-checked:text-indigo-700
+                      transition">
+            🏋️ Training
+          </div>
+        </label>
+        <label class="cursor-pointer">
+          <input type="radio" name="session_type" value="competition" class="sr-only peer" />
+          <div class="flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-slate-200
+                      bg-white font-semibold text-sm text-slate-600
+                      peer-checked:border-amber-500 peer-checked:bg-amber-50 peer-checked:text-amber-700
+                      transition" id="compTypeLabel">
+            🏆 Competition
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <!-- 2. Date -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-1.5">Date</label>
+      <input type="date" name="date" required value="{{ today }}"
+             class="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 text-base
+                    focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+    </div>
+
+    <!-- 3. Skills practiced -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-1.5">Skills practiced</label>
+      <div class="bg-white rounded-xl border border-slate-200 p-3">
+        <!-- Tags display -->
+        <div id="skillTags" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
+        <!-- Suggestions -->
+        <div class="flex flex-wrap gap-1.5 mb-2">
+          {% for skill in skill_suggestions %}
+          <button type="button" onclick="toggleSkill('{{ skill }}')"
+                  id="sug-{{ skill | replace(' ', '-') }}"
+                  class="skill-sug text-xs px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50
+                         text-slate-600 hover:border-indigo-400 hover:text-indigo-600 transition">
+            {{ skill }}
+          </button>
+          {% endfor %}
+        </div>
+        <!-- Custom input -->
+        <input type="text" id="skillInput" placeholder="Or type a skill and press Enter…"
+               class="w-full text-sm text-slate-700 placeholder-slate-300 outline-none" />
+      </div>
+      <input type="hidden" name="skills_practiced" id="skillsJson" value="[]" />
+    </div>
+
+    <!-- 4. Mood going in -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-3">Mood going in</label>
+      <div class="flex gap-2 justify-between" id="moodBeforeGroup">
+        {% for v, em in [(1,'😞'),(2,'😕'),(3,'😐'),(4,'🙂'),(5,'😄')] %}
+        <button type="button" class="mood-btn flex-1" data-group="before" data-val="{{ v }}"
+                onclick="selectMood('before', {{ v }})">
+          <span>{{ em }}</span>
+          <span class="text-xs text-slate-400">{{ v }}</span>
+        </button>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="mood_before" id="mood_before" />
+    </div>
+
+    <!-- 5. Mood coming out -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-3">Mood coming out</label>
+      <div class="flex gap-2 justify-between" id="moodAfterGroup">
+        {% for v, em in [(1,'😞'),(2,'😕'),(3,'😐'),(4,'🙂'),(5,'😄')] %}
+        <button type="button" class="mood-btn flex-1" data-group="after" data-val="{{ v }}"
+                onclick="selectMood('after', {{ v }})">
+          <span>{{ em }}</span>
+          <span class="text-xs text-slate-400">{{ v }}</span>
+        </button>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="mood_after" id="mood_after" />
+    </div>
+
+    <!-- 6. Energy -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-3">Energy level</label>
+      <div class="flex gap-3">
+        {% for val, label in [('low','🔋 Low'),('medium','⚡ Medium'),('high','🔥 High')] %}
+        <button type="button" class="energy-btn flex-1" data-val="{{ val }}"
+                onclick="selectEnergy('{{ val }}')">
+          {{ label }}
+        </button>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="energy_level" id="energy_level" />
+    </div>
+
+    <!-- 7. Competition result (hidden by default) -->
+    <div id="comp_result_section" class="hidden">
+      <label class="block text-sm font-semibold text-slate-700 mb-3">Result</label>
+      <div class="grid grid-cols-2 gap-2">
+        {% for val, label in [('win','🏆 Win'),('loss','❌ Loss'),('draw','🤝 Draw'),('participation','🎖️ Participated')] %}
+        <label class="cursor-pointer">
+          <input type="radio" name="competition_result" value="{{ val }}" class="sr-only peer" />
+          <div class="flex items-center justify-center py-2.5 rounded-xl border-2 border-slate-200
+                      bg-white text-sm font-medium text-slate-600
+                      peer-checked:border-indigo-500 peer-checked:bg-indigo-50 peer-checked:text-indigo-700
+                      transition">
+            {{ label }}
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- 8. Notes -->
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-1.5">
+        Observations
+        <span class="text-slate-400 font-normal">(optional)</span>
+      </label>
+      <textarea name="notes" rows="4"
+                class="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 text-sm
+                       focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none
+                       placeholder-slate-300 leading-relaxed"
+                placeholder="Describe what you observed — drills practiced, technique improvements, challenges faced, coach feedback, standout moments. The more specific, the better the AI can analyse progress."></textarea>
+      <p class="text-xs text-slate-400 mt-1.5">
+        💡 Tip: Mention specific skills, what went well, what needs work, and how the coach responded.
+      </p>
+    </div>
+
+    <div class="pt-2">
+      <button type="submit"
+              class="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white
+                     font-semibold py-4 rounded-xl transition text-base">
+        Save session
+      </button>
+    </div>
+  </form>
+</div>
+
+{% block scripts %}
+<script>
+  // ─── Skills tag system ────────────────────────────────────────────
+  let skills = [];
+
+  function renderTags() {
+    const container = document.getElementById('skillTags');
+    container.innerHTML = skills.map(s =>
+      `<span class="tag-chip">${s}<span class="remove" onclick="removeSkill('${s}')">×</span></span>`
+    ).join('');
+    document.getElementById('skillsJson').value = JSON.stringify(skills);
+  }
+
+  function addSkill(name) {
+    name = name.trim();
+    if (name && !skills.includes(name)) {
+      skills.push(name);
+      renderTags();
+      // Highlight suggestion button if present
+      const btn = document.getElementById('sug-' + name.replace(/ /g, '-'));
+      if (btn) btn.classList.add('border-indigo-500', 'text-indigo-600', 'bg-indigo-50');
+    }
+  }
+
+  function removeSkill(name) {
+    skills = skills.filter(s => s !== name);
+    renderTags();
+    const btn = document.getElementById('sug-' + name.replace(/ /g, '-'));
+    if (btn) btn.classList.remove('border-indigo-500', 'text-indigo-600', 'bg-indigo-50');
+  }
+
+  function toggleSkill(name) {
+    if (skills.includes(name)) {
+      removeSkill(name);
+    } else {
+      addSkill(name);
+    }
+  }
+
+  document.getElementById('skillInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addSkill(this.value);
+      this.value = '';
+    }
+  });
+
+  // ─── Mood ─────────────────────────────────────────────────────────
+  function selectMood(group, val) {
+    document.querySelectorAll(`[data-group="${group}"]`).forEach(btn => {
+      btn.classList.remove('selected');
+    });
+    document.querySelector(`[data-group="${group}"][data-val="${val}"]`).classList.add('selected');
+    document.getElementById(`mood_${group}`).value = val;
+  }
+
+  // ─── Energy ───────────────────────────────────────────────────────
+  function selectEnergy(val) {
+    document.querySelectorAll('.energy-btn').forEach(btn => btn.classList.remove('selected'));
+    document.querySelector(`.energy-btn[data-val="${val}"]`).classList.add('selected');
+    document.getElementById('energy_level').value = val;
+  }
+
+  // ─── Competition result toggle ────────────────────────────────────
+  document.querySelectorAll('input[name="session_type"]').forEach(radio => {
+    radio.addEventListener('change', function() {
+      const section = document.getElementById('comp_result_section');
+      if (this.value === 'competition') {
+        section.classList.remove('hidden');
+      } else {
+        section.classList.add('hidden');
+      }
+    });
+  });
+</script>
+{% endblock %}
+{% endblock %}

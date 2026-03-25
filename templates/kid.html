@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+{% block title %}{{ kid.name }} — GoalDigger{% endblock %}
+
+{% block content %}
+<div class="px-4 pt-6">
+  <!-- Back -->
+  <a href="{{ url_for('dashboard') }}" class="inline-flex items-center gap-1.5 text-sm text-slate-500 mb-5">
+    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+    </svg>
+    Home
+  </a>
+
+  <!-- Kid header -->
+  <div class="flex items-center gap-4 mb-6">
+    <div class="w-14 h-14 rounded-2xl flex items-center justify-center text-white text-2xl font-bold"
+         style="background-color: {{ kid.avatar_color }}">
+      {{ kid.name[0].upper() }}
+    </div>
+    <div>
+      <h1 class="text-2xl font-bold text-slate-800">{{ kid.name }}</h1>
+      <p class="text-slate-400 text-sm">
+        {% if age %}{{ age }} years old · {% endif %}{{ sports|length }}/10 sports
+      </p>
+    </div>
+  </div>
+
+  <!-- Sports list -->
+  {% if sports %}
+  <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Sports</h2>
+  <div class="space-y-3 mb-5">
+    {% for sp in sports %}
+    <a href="{{ url_for('sport_detail', sport_id=sp.id) }}"
+       class="flex items-center gap-4 bg-white rounded-2xl p-4 shadow-sm border border-slate-100
+              active:bg-slate-50 transition">
+      <!-- Icon -->
+      <div class="w-11 h-11 rounded-xl bg-indigo-50 flex items-center justify-center text-2xl flex-shrink-0">
+        {{ sp.icon }}
+      </div>
+      <!-- Info -->
+      <div class="flex-1 min-w-0">
+        <div class="font-semibold text-slate-800">{{ sp.name }}</div>
+        <div class="text-sm text-slate-400 mt-0.5 flex items-center gap-2">
+          <span>{{ sp.session_count }} session{% if sp.session_count != 1 %}s{% endif %}</span>
+          {% if sp.last_session %}
+          <span>·</span>
+          <span>{{ sp.last_session | format_date }}</span>
+          {% endif %}
+          {% if sp.has_insights %}
+          <span>·</span>
+          <span class="text-indigo-400 text-xs font-medium">AI ✓</span>
+          {% endif %}
+        </div>
+      </div>
+      <svg class="w-5 h-5 text-slate-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+      </svg>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-center py-12">
+    <div class="text-5xl mb-3">⚽</div>
+    <h2 class="text-base font-semibold text-slate-600 mb-1">No sports yet</h2>
+    <p class="text-slate-400 text-sm">Add {{ kid.name }}'s first sport to start tracking.</p>
+  </div>
+  {% endif %}
+
+  <!-- Add sport button -->
+  {% if sports|length < sport_limit %}
+  <a href="{{ url_for('add_sport', kid_id=kid.id) }}"
+     class="flex items-center justify-center gap-2 w-full py-3.5 rounded-2xl border-2 border-dashed
+            border-indigo-200 text-indigo-500 font-semibold text-sm
+            hover:bg-indigo-50 active:bg-indigo-100 transition">
+    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
+    </svg>
+    Add a sport
+  </a>
+  {% else %}
+  <div class="text-center text-sm text-slate-400 py-3">
+    Maximum of 10 sports reached.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

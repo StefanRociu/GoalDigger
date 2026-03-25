@@ -1,0 +1,314 @@
+{% extends 'base.html' %}
+{% block title %}{{ sport.name }} — {{ kid.name }} — GoalDigger{% endblock %}
+
+{% block content %}
+<div class="px-4 pt-6">
+  <!-- Back -->
+  <a href="{{ url_for('kid_profile', kid_id=kid.id) }}"
+     class="inline-flex items-center gap-1.5 text-sm text-slate-500 mb-5">
+    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+    </svg>
+    {{ kid.name }}
+  </a>
+
+  <!-- Sport header -->
+  <div class="flex items-center gap-3 mb-5">
+    <div class="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center text-2xl">
+      {{ sport.icon }}
+    </div>
+    <div>
+      <h1 class="text-2xl font-bold text-slate-800">{{ sport.name }}</h1>
+      <p class="text-slate-400 text-sm">{{ kid.name }}</p>
+    </div>
+  </div>
+
+  <!-- Stats bar -->
+  <div class="grid grid-cols-3 gap-3 mb-6">
+    <div class="bg-white rounded-xl p-3 text-center border border-slate-100 shadow-sm">
+      <div class="text-xl font-bold text-slate-800">{{ training_count }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">Training</div>
+    </div>
+    <div class="bg-white rounded-xl p-3 text-center border border-slate-100 shadow-sm">
+      <div class="text-xl font-bold text-slate-800">{{ comp_count }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">Competitions</div>
+    </div>
+    <div class="bg-white rounded-xl p-3 text-center border border-slate-100 shadow-sm">
+      <div class="text-xl font-bold text-slate-800">
+        {% if avg_mood %}
+          {{ {1:'😞',2:'😕',3:'😐',4:'🙂',5:'😄'}.get(avg_mood|round|int, '—') }}
+        {% else %}—{% endif %}
+      </div>
+      <div class="text-xs text-slate-400 mt-0.5">Avg mood</div>
+    </div>
+  </div>
+
+  <!-- AI INSIGHTS SECTION -->
+  <div class="mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">AI Insights</h2>
+      <button id="generateBtn" onclick="generateInsights()"
+              class="flex items-center gap-1.5 text-xs font-semibold text-indigo-500
+                     bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-full transition">
+        <span id="generateBtnIcon">✨</span>
+        <span id="generateBtnText">
+          {% if insights %}Refresh{% else %}Generate{% endif %}
+        </span>
+      </button>
+    </div>
+
+    <div id="insightsCard"
+         class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden
+                {% if not insights %}hidden{% endif %}">
+      <!-- Level badge -->
+      <div class="bg-gradient-to-r from-indigo-500 to-purple-500 px-5 py-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-white/70 text-xs font-medium uppercase tracking-wide">Current Level</div>
+            <div class="text-white text-xl font-bold mt-0.5" id="insightLevel">
+              {{ insights.current_level if insights else '' }}
+            </div>
+          </div>
+          <div class="text-3xl">🏆</div>
+        </div>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <!-- Progress summary -->
+        <div>
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Progress</div>
+          <p class="text-sm text-slate-700 leading-relaxed" id="insightSummary">
+            {{ insights.progress_summary if insights else '' }}
+          </p>
+        </div>
+
+        <!-- Next steps -->
+        <div>
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Recommended Next Steps</div>
+          <ul class="space-y-2" id="insightSteps">
+            {% if insights %}
+            {% for step in insights.next_steps %}
+            <li class="flex items-start gap-2.5 text-sm text-slate-700">
+              <span class="text-indigo-400 mt-0.5 flex-shrink-0">→</span>
+              <span>{{ step }}</span>
+            </li>
+            {% endfor %}
+            {% endif %}
+          </ul>
+        </div>
+
+        <!-- YouTube links -->
+        <div id="youtubeSection"
+             class="{% if not insights or not insights.youtube_links %}hidden{% endif %}">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Watch & Learn</div>
+          <div class="space-y-2" id="youtubeLinks">
+            {% if insights %}
+            {% for link in insights.youtube_links %}
+            <a href="{{ link.url }}" target="_blank" rel="noopener"
+               class="flex items-center gap-3 p-3 rounded-xl bg-slate-50 hover:bg-red-50
+                      border border-slate-100 transition group">
+              <div class="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center flex-shrink-0">
+                <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                </svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium text-slate-700 group-hover:text-red-600 truncate">
+                  {{ link.title }}
+                </div>
+                <div class="text-xs text-slate-400 truncate">{{ link.description }}</div>
+              </div>
+            </a>
+            {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+
+        {% if insights %}
+        <div class="text-xs text-slate-300 pt-1">
+          Last generated: {{ insights.generated_at }}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- No insights yet -->
+    <div id="noInsights"
+         class="{% if insights %}hidden{% endif %} bg-white rounded-2xl border border-dashed
+                border-slate-200 p-6 text-center">
+      <div class="text-3xl mb-2">🤖</div>
+      <p class="text-sm text-slate-500">
+        Tap <strong>Generate</strong> to get AI-powered insights, level assessment, and personalised next steps.
+      </p>
+    </div>
+  </div>
+
+  <!-- Sessions -->
+  <div class="mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sessions</h2>
+      <a href="{{ url_for('add_session', sport_id=sport.id) }}"
+         class="flex items-center gap-1.5 text-xs font-semibold text-indigo-500
+                bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-full transition">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
+        </svg>
+        Log session
+      </a>
+    </div>
+
+    {% if sessions %}
+    <div class="space-y-3">
+      {% for s in sessions %}
+      <div class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+        <!-- Session header -->
+        <div class="flex items-center justify-between px-4 py-3 border-b border-slate-50">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-semibold
+              {% if s.session_type == 'training' %}text-indigo-600{% else %}text-amber-600{% endif %}">
+              {% if s.session_type == 'training' %}🏋️ Training{% else %}🏆 Competition{% endif %}
+            </span>
+            {% if s.competition_result %}
+            <span class="text-xs px-2 py-0.5 rounded-full
+              {% if s.competition_result == 'win' %}bg-emerald-100 text-emerald-700
+              {% elif s.competition_result == 'loss' %}bg-red-100 text-red-700
+              {% else %}bg-slate-100 text-slate-600{% endif %}">
+              {{ s.competition_result | result_label }}
+            </span>
+            {% endif %}
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-slate-400">{{ s.date | format_date }}</span>
+            <form method="POST" action="{{ url_for('delete_session', session_id=s.id) }}"
+                  onsubmit="return confirm('Delete this session?')">
+              <button type="submit" class="text-slate-300 hover:text-red-400 transition text-lg leading-none">×</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Session body -->
+        <div class="px-4 py-3 space-y-2.5">
+          <!-- Skills -->
+          {% if s.skills %}
+          <div class="flex flex-wrap gap-1.5">
+            {% for skill in s.skills %}
+            <span class="tag-chip">{{ skill }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          <!-- Mood + Energy row -->
+          {% if s.mood_before or s.mood_after or s.energy_level %}
+          <div class="flex items-center gap-3 text-sm text-slate-500">
+            {% if s.mood_before %}
+            <span title="Mood going in">{{ s.mood_before | mood_emoji }} in</span>
+            {% endif %}
+            {% if s.mood_after %}
+            <span title="Mood coming out">→ {{ s.mood_after | mood_emoji }} out</span>
+            {% endif %}
+            {% if s.energy_level %}
+            <span class="ml-auto text-xs">{{ s.energy_level | energy_label }}</span>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          <!-- Notes -->
+          {% if s.notes %}
+          <p class="text-sm text-slate-600 leading-relaxed border-t border-slate-50 pt-2.5">
+            {{ s.notes }}
+          </p>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="text-center py-10 bg-white rounded-2xl border border-slate-100">
+      <div class="text-4xl mb-2">📋</div>
+      <p class="text-sm text-slate-400">No sessions logged yet.</p>
+      <a href="{{ url_for('add_session', sport_id=sport.id) }}"
+         class="inline-block mt-3 text-indigo-500 font-semibold text-sm">Log the first session →</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Floating Add button -->
+<a href="{{ url_for('add_session', sport_id=sport.id) }}"
+   class="fixed bottom-6 right-6 w-14 h-14 bg-indigo-500 hover:bg-indigo-600 text-white
+          rounded-2xl shadow-lg flex items-center justify-center text-2xl transition
+          active:scale-95">
+  +
+</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const sportId = {{ sport.id }};
+
+  async function generateInsights() {
+    const btn = document.getElementById('generateBtn');
+    const icon = document.getElementById('generateBtnIcon');
+    const text = document.getElementById('generateBtnText');
+
+    icon.textContent = '⏳';
+    text.textContent = 'Thinking…';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch(`/sports/${sportId}/insights/generate`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed');
+      const data = await res.json();
+      renderInsights(data);
+    } catch (e) {
+      icon.textContent = '✨';
+      text.textContent = 'Retry';
+      btn.disabled = false;
+    }
+  }
+
+  function renderInsights(data) {
+    document.getElementById('insightLevel').textContent = data.current_level;
+    document.getElementById('insightSummary').textContent = data.progress_summary;
+
+    // Next steps
+    const stepsEl = document.getElementById('insightSteps');
+    stepsEl.innerHTML = data.next_steps.map(step =>
+      `<li class="flex items-start gap-2.5 text-sm text-slate-700">
+         <span class="text-indigo-400 mt-0.5 flex-shrink-0">→</span>
+         <span>${step}</span>
+       </li>`
+    ).join('');
+
+    // YouTube links
+    const ytSection = document.getElementById('youtubeSection');
+    const ytLinks = document.getElementById('youtubeLinks');
+    if (data.youtube_links && data.youtube_links.length > 0) {
+      ytLinks.innerHTML = data.youtube_links.map(link =>
+        `<a href="${link.url}" target="_blank" rel="noopener"
+            class="flex items-center gap-3 p-3 rounded-xl bg-slate-50 hover:bg-red-50 border border-slate-100 transition group">
+           <div class="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center flex-shrink-0">
+             <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+               <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+             </svg>
+           </div>
+           <div class="flex-1 min-w-0">
+             <div class="text-sm font-medium text-slate-700 group-hover:text-red-600 truncate">${link.title}</div>
+             <div class="text-xs text-slate-400 truncate">${link.description}</div>
+           </div>
+         </a>`
+      ).join('');
+      ytSection.classList.remove('hidden');
+    }
+
+    document.getElementById('insightsCard').classList.remove('hidden');
+    document.getElementById('noInsights').classList.add('hidden');
+
+    const btn = document.getElementById('generateBtn');
+    document.getElementById('generateBtnIcon').textContent = '✨';
+    document.getElementById('generateBtnText').textContent = 'Refresh';
+    btn.disabled = false;
+  }
+</script>
+{% endblock %}
