@@ -1,7 +1,8 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, g
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 import psycopg2.extras
+from psycopg2 import pool as pg_pool
 import os
 import json
 import secrets
@@ -67,27 +68,36 @@ DEFAULT_SKILLS = ["Technique", "Conditioning", "Tactics", "Coordination", "Endur
 AVATAR_COLORS = ['#6366F1', '#EC4899', '#14B8A6', '#F59E0B', '#8B5CF6', '#06B6D4', '#84CC16', '#EF4444']
 
 # ---------------------------------------------------------------------------
-# DATABASE — PostgreSQL helpers
+# DATABASE — connection pool + per-request connection via Flask g
 # ---------------------------------------------------------------------------
 
-def get_connection():
-    """Return a psycopg2 connection, fixing Railway's postgres:// URL prefix."""
+_pool = None
+
+def _db_url():
     url = os.environ.get('DATABASE_URL', '')
     if not url:
         raise RuntimeError("DATABASE_URL environment variable is not set.")
-    if url.startswith('postgres://'):
-        url = url.replace('postgres://', 'postgresql://', 1)
-    return psycopg2.connect(url)
+    return url.replace('postgres://', 'postgresql://', 1) if url.startswith('postgres://') else url
+
+def get_pool():
+    """Initialise the connection pool once and reuse it."""
+    global _pool
+    if _pool is None:
+        _pool = pg_pool.ThreadedConnectionPool(1, 10, _db_url())
+    return _pool
+
+def get_connection():
+    """Return a connection for the current request, reusing it if already open."""
+    if 'db_conn' not in g:
+        g.db_conn = get_pool().getconn()
+    return g.db_conn
 
 def db_query(sql, params=None, one=False):
     """Execute a SELECT and return dict-style rows."""
     conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            return cur.fetchone() if one else cur.fetchall()
-    finally:
-        conn.close()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return cur.fetchone() if one else cur.fetchall()
 
 def db_exec(sql, params=None):
     """Execute a write statement (INSERT/UPDATE/DELETE)."""
@@ -99,8 +109,6 @@ def db_exec(sql, params=None):
     except Exception:
         conn.rollback()
         raise
-    finally:
-        conn.close()
 
 def db_insert(sql, params=None):
     """Execute an INSERT and return the new row's id."""
@@ -114,11 +122,18 @@ def db_insert(sql, params=None):
     except Exception:
         conn.rollback()
         raise
-    finally:
-        conn.close()
+
+@app.teardown_appcontext
+def return_db_connection(exc):
+    """Return the connection to the pool at the end of every request."""
+    conn = g.pop('db_conn', None)
+    if conn is not None:
+        if exc:
+            conn.rollback()
+        get_pool().putconn(conn)
 
 def init_db():
-    conn = get_connection()
+    conn = psycopg2.connect(_db_url())
     try:
         with conn.cursor() as cur:
             cur.execute('''
