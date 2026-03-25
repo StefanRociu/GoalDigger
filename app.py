@@ -378,9 +378,8 @@ def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
         return generate_ai_insights(sport_name, kid_name, sessions_data)
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        from google import genai
+        client = genai.Client(api_key=api_key)
 
         session_count  = len(sessions_data)
         training_count = sum(1 for s in sessions_data if s['session_type'] == 'training')
@@ -446,7 +445,10 @@ Return a JSON object with these fields:
 Return ONLY valid JSON. No markdown, no code fences, no explanation.
 {{"current_level":"...","progress_summary":"...","next_steps":["..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt
+        )
         text = response.text.strip()
 
         if '```' in text:
