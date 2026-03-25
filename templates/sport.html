@@ -346,6 +346,9 @@
     const skeleton = document.getElementById('insightsSkeleton');
     const noIns = document.getElementById('noInsights');
 
+    // Remember if we already had insights before clearing
+    const hadInsights = !card.classList.contains('hidden');
+
     // Clear existing output immediately, show skeleton
     card.classList.add('hidden');
     noIns.classList.add('hidden');
@@ -362,7 +365,12 @@
       renderInsights(data);
     } catch (e) {
       skeleton.classList.add('hidden');
-      noIns.classList.remove('hidden');
+      // Restore old card if it existed, otherwise show empty state
+      if (hadInsights) {
+        card.classList.remove('hidden');
+      } else {
+        noIns.classList.remove('hidden');
+      }
       icon.textContent = '✨';
       text.textContent = 'Retry';
       btn.disabled = false;
@@ -417,7 +425,13 @@
 
     try {
       const res = await fetch(`/sessions/${sessionId}/tip`, { method: 'POST' });
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch (_) {
+        const raw = await res.text().catch(() => '');
+        throw new Error(`Server error ${res.status}: ${raw.replace(/<[^>]+>/g, '').slice(0, 80)}`);
+      }
 
       if (data.tips && data.tips.length > 0) {
         tipList.innerHTML = data.tips.map(tip =>
@@ -429,7 +443,7 @@
         tipList.classList.remove('hidden');
         btn.classList.add('hidden');
       } else if (data.rate_limited) {
-        btnText.textContent = 'Rate limit — try in a minute';
+        btnText.textContent = `Rate limit — ${data.error || 'try in a minute'}`;
         btn.disabled = false;
       } else {
         btnText.textContent = data.error ? `⚠ ${data.error.slice(0, 60)}` : 'Try again';
