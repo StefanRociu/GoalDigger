@@ -4,6 +4,7 @@ import psycopg2
 import psycopg2.extras
 import os
 import json
+import secrets
 from datetime import datetime
 from functools import wraps
 
@@ -172,6 +173,14 @@ def init_db():
                     progress_summary TEXT,
                     next_steps TEXT,
                     youtube_links TEXT
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS share_tokens (
+                    id SERIAL PRIMARY KEY,
+                    token TEXT UNIQUE NOT NULL,
+                    sport_id INTEGER NOT NULL REFERENCES sports(id) ON DELETE CASCADE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
         conn.commit()
@@ -344,6 +353,93 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
         "next_steps": next_steps,
         "youtube_links": generate_youtube_links(sport_name, level, top_skills)
     }
+
+def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
+    """Generate insights via Google Gemini. Falls back to simulation if unavailable."""
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        return generate_ai_insights(sport_name, kid_name, sessions_data)
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        session_count   = len(sessions_data)
+        training_count  = sum(1 for s in sessions_data if s['session_type'] == 'training')
+        comp_count      = sum(1 for s in sessions_data if s['session_type'] == 'competition')
+
+        all_skills = []
+        for s in sessions_data:
+            if s['skills_practiced']:
+                try:
+                    skills = json.loads(s['skills_practiced'])
+                except Exception:
+                    skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
+                all_skills.extend(skills)
+        skill_counts = {}
+        for sk in all_skills:
+            skill_counts[sk] = skill_counts.get(sk, 0) + 1
+
+        mood_scores = [s['mood_after'] for s in sessions_data if s['mood_after']]
+        avg_mood    = round(sum(mood_scores) / len(mood_scores), 1) if mood_scores else None
+
+        recent_notes = [s['notes'] for s in sessions_data[-5:] if s['notes']]
+        comp_results = [s['competition_result'] for s in sessions_data if s['competition_result']]
+
+        age_str = f", {kid_age} years old" if kid_age else ""
+
+        prompt = f"""You are an experienced youth sports development coach analysing a child's athletic progress.
+
+Child: {kid_name}{age_str}
+Sport: {sport_name}
+Total sessions logged: {session_count} ({training_count} training, {comp_count} competitions)
+Skills practiced (with frequency): {json.dumps(skill_counts) if skill_counts else 'None recorded yet'}
+Average mood after sessions: {f'{avg_mood}/5' if avg_mood else 'Not recorded'} (1=very low, 5=very high)
+Competition results: {', '.join(comp_results) if comp_results else 'No competitions yet'}
+Recent coach/parent observations:
+{chr(10).join(f'- {note}' for note in recent_notes) if recent_notes else '- No written observations yet'}
+
+Analyse this data and return a JSON object with exactly these fields:
+- "current_level": one of Beginner / Developing / Intermediate / Advanced / Expert
+- "progress_summary": 2-3 sentences summarising progress, patterns, and mood trends. Be specific, warm, and honest.
+- "next_steps": array of 3-4 concrete, actionable recommendations for the next 2-4 weeks
+- "youtube_search_queries": array of 3 objects, each with "title" (short display label) and "search_query" (YouTube search string)
+
+Return ONLY valid JSON. No markdown, no explanation, no code blocks.
+
+Example:
+{{"current_level":"Developing","progress_summary":"...","next_steps":["...","...","..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
+
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+
+        # Strip markdown code fences if Gemini wraps the output
+        if text.startswith('```'):
+            text = text.split('```')[1]
+            if text.startswith('json'):
+                text = text[4:]
+        data = json.loads(text.strip())
+
+        youtube_links = [
+            {
+                "title":       item.get("title", ""),
+                "url":         "https://www.youtube.com/results?search_query=" + item.get("search_query", "").replace(" ", "+"),
+                "description": item.get("title", "")
+            }
+            for item in data.get("youtube_search_queries", [])
+        ]
+
+        return {
+            "current_level":    data.get("current_level", "Developing"),
+            "progress_summary": data.get("progress_summary", ""),
+            "next_steps":       data.get("next_steps", []),
+            "youtube_links":    youtube_links
+        }
+
+    except Exception:
+        # Any failure — network, parse error, quota — falls back to simulation
+        return generate_ai_insights(sport_name, kid_name, sessions_data)
 
 # ---------------------------------------------------------------------------
 # ROUTES — AUTH
@@ -643,7 +739,8 @@ def generate_insights(sport_id):
     )
     kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
     sessions_data = [dict(s) for s in sessions_raw]
-    insights = generate_ai_insights(sport['name'], kid['name'], sessions_data)
+    kid_age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
+    insights = generate_ai_insights_gemini(sport['name'], kid['name'], kid_age, sessions_data)
 
     db_exec('''
         INSERT INTO ai_insights (sport_id, current_level, progress_summary, next_steps, youtube_links)
@@ -664,6 +761,83 @@ def generate_insights(sport_id):
 
     insights['generated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M')
     return jsonify(insights)
+
+# ---------------------------------------------------------------------------
+# ROUTES — COACH SHARING
+# ---------------------------------------------------------------------------
+
+@app.route('/sports/<int:sport_id>/share', methods=['POST'])
+@login_required
+def create_share_link(sport_id):
+    sport = verify_sport_ownership(sport_id)
+    if not sport:
+        return jsonify({"error": "Not found"}), 404
+    # Reuse existing token if one exists
+    existing = db_query('SELECT token FROM share_tokens WHERE sport_id = %s', (sport_id,), one=True)
+    if existing:
+        token = existing['token']
+    else:
+        token = secrets.token_urlsafe(16)
+        db_insert('INSERT INTO share_tokens (token, sport_id) VALUES (%s, %s)', (token, sport_id))
+    share_url = request.host_url.rstrip('/') + url_for('coach_view', token=token)
+    return jsonify({"url": share_url})
+
+@app.route('/coach/<token>')
+def coach_view(token):
+    row = db_query('SELECT * FROM share_tokens WHERE token = %s', (token,), one=True)
+    if not row:
+        return render_template('coach_view.html', error="This link is invalid or has expired."), 404
+
+    sport_id = row['sport_id']
+    sport    = db_query('SELECT * FROM sports WHERE id = %s', (sport_id,), one=True)
+    kid      = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
+
+    sessions_raw = db_query(
+        'SELECT * FROM sessions WHERE sport_id = %s ORDER BY date DESC', (sport_id,)
+    )
+    insights_raw = db_query('SELECT * FROM ai_insights WHERE sport_id = %s', (sport_id,), one=True)
+
+    sessions_list = []
+    for s in sessions_raw:
+        skills = []
+        if s['skills_practiced']:
+            try:
+                skills = json.loads(s['skills_practiced'])
+            except Exception:
+                skills = [sk.strip() for sk in s['skills_practiced'].split(',') if sk.strip()]
+        sessions_list.append({
+            "id": s['id'], "session_type": s['session_type'], "date": s['date'],
+            "skills": skills, "mood_before": s['mood_before'], "mood_after": s['mood_after'],
+            "energy_level": s['energy_level'], "competition_result": s['competition_result'],
+            "notes": s['notes']
+        })
+
+    insights_data = None
+    if insights_raw:
+        try:
+            insights_data = {
+                "current_level":    insights_raw['current_level'],
+                "progress_summary": insights_raw['progress_summary'],
+                "next_steps":       json.loads(insights_raw['next_steps']),
+                "youtube_links":    json.loads(insights_raw['youtube_links']),
+                "generated_at":     insights_raw['generated_at'].strftime('%d %b %Y') if insights_raw['generated_at'] else ''
+            }
+        except Exception:
+            insights_data = None
+
+    mood_scores = [s['mood_after'] for s in sessions_list if s['mood_after']]
+    avg_mood    = round(sum(mood_scores) / len(mood_scores), 1) if mood_scores else None
+
+    return render_template(
+        'coach_view.html',
+        sport=sport, kid=kid,
+        sessions=sessions_list,
+        insights=insights_data,
+        avg_mood=avg_mood,
+        training_count=sum(1 for s in sessions_list if s['session_type'] == 'training'),
+        comp_count=sum(1 for s in sessions_list if s['session_type'] == 'competition'),
+        error=None
+    )
 
 # ---------------------------------------------------------------------------
 # TEMPLATE FILTERS
