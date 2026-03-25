@@ -453,7 +453,7 @@ Return ONLY valid JSON. No markdown, no code fences, no explanation.
 {{"current_level":"...","progress_summary":"...","next_steps":["..."],"youtube_search_queries":[{{"title":"...","search_query":"..."}}]}}"""
 
         response = client.models.generate_content(
-            model='gemini-2.0-flash-001',
+            model='gemini-2.5-flash',
             contents=prompt
         )
         text = response.text.strip()
@@ -522,7 +522,7 @@ Return JSON only. No markdown, no explanation.
 {{"tips": ["tip 1", "tip 2", "tip 3"]}}"""
 
         response = client.models.generate_content(
-            model='gemini-2.0-flash-001',
+            model='gemini-2.5-flash',
             contents=prompt
         )
 
