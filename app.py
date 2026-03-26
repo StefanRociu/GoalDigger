@@ -1168,6 +1168,19 @@ def submit_feedback():
             return redirect(url_for('dashboard'))
     return render_template('feedback_form.html', categories=FEEDBACK_CATEGORIES)
 
+@app.route('/admin/feedback')
+@login_required
+def admin_feedback():
+    admin_email = os.environ.get('ADMIN_EMAIL', '')
+    user = get_current_user()
+    if not admin_email or user['email'] != admin_email:
+        flash('Access denied.', 'error')
+        return redirect(url_for('dashboard'))
+    rows = db_query(
+        'SELECT * FROM feedback ORDER BY created_at DESC', ()
+    )
+    return render_template('admin_feedback.html', rows=rows, categories=dict(FEEDBACK_CATEGORIES))
+
 # ---------------------------------------------------------------------------
 # TEMPLATE FILTERS
 # ---------------------------------------------------------------------------
