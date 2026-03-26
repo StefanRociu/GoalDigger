@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block title %}Feedback inbox — GoalDigger{% endblock %}
+
+{% block content %}
+<div class="px-4 pt-6">
+    <a href="{{ url_for('dashboard') }}" class="inline-flex items-center gap-1.5 text-sm text-slate-500 mb-6">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        </svg>
+        Dashboard
+    </a>
+
+    <h1 class="text-2xl font-bold text-slate-800 mb-1">Feedback inbox</h1>
+    <p class="text-slate-400 text-sm mb-6">{{ rows | length }} submission{{ 's' if rows | length != 1 else '' }}</p>
+
+    {% if not rows %}
+    <div class="text-center py-16 text-slate-400">
+        <div class="text-4xl mb-3">📭</div>
+        <p>No feedback yet.</p>
+    </div>
+    {% else %}
+    <div class="space-y-4">
+        {% for row in rows %}
+        <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 space-y-2">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold px-2.5 py-1 rounded-full
+          {% if row.category == 'broken' %}bg-red-100 text-red-700
+          {% else %}bg-indigo-100 text-indigo-700{% endif %}">
+                    {{ categories.get(row.category, row.category) }}
+                </span>
+                <span class="text-xs text-slate-400">{{ row.created_at.strftime('%d %b %Y %H:%M') if row.created_at else
+                    '' }}</span>
+            </div>
+            <p class="text-slate-700 text-sm leading-relaxed">{{ row.message }}</p>
+            <p class="text-xs text-slate-400">{{ row.user_name or 'Unknown' }}{% if row.user_email %} · {{
+                row.user_email }}{% endif %}</p>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
