@@ -13,6 +13,58 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'goaldigger-change-this-in-production')
 
 # ---------------------------------------------------------------------------
+# HELPER — age / experience calculations
+# ---------------------------------------------------------------------------
+
+def precise_age_str(birth_date):
+    """Return e.g. '7 years 3 months old' from a date object or ISO string. Falls back to None."""
+    if not birth_date:
+        return None
+    from datetime import date as _date
+    if isinstance(birth_date, str):
+        try:
+            birth_date = _date.fromisoformat(str(birth_date))
+        except ValueError:
+            return None
+    today = datetime.now().date()
+    years  = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+    months = ((today.month - birth_date.month) % 12)
+    if years < 0:
+        return None
+    if months == 0:
+        return f"{years} years old"
+    return f"{years} years {months} months old"
+
+def experience_str(started_date):
+    """Return e.g. '2 years 4 months' from a date object or ISO string."""
+    if not started_date:
+        return None
+    from datetime import date as _date
+    if isinstance(started_date, str):
+        try:
+            started_date = _date.fromisoformat(str(started_date))
+        except ValueError:
+            return None
+    today = datetime.now().date()
+    total_months = (today.year - started_date.year) * 12 + (today.month - started_date.month)
+    if total_months < 1:
+        return "less than a month"
+    if total_months < 12:
+        return f"{total_months} month{'s' if total_months != 1 else ''}"
+    years  = total_months // 12
+    months = total_months % 12
+    base   = f"{years} year{'s' if years != 1 else ''}"
+    return base if months == 0 else f"{base} {months} month{'s' if months != 1 else ''}"
+
+def kid_age_label(kid):
+    """Return precise age string, falling back to birth_year if birth_date not set."""
+    if kid.get('birth_date'):
+        return precise_age_str(kid['birth_date'])
+    if kid.get('birth_year'):
+        return f"{datetime.now().year - kid['birth_year']} years old"
+    return None
+
+# ---------------------------------------------------------------------------
 # SPORT CATALOGUE
 # ---------------------------------------------------------------------------
 
@@ -180,9 +232,20 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # Migration: add ai_feedback column to existing tables
+            # Migrations
+            cur.execute('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ai_feedback TEXT')
+            cur.execute('ALTER TABLE kids    ADD COLUMN IF NOT EXISTS birth_date DATE')
+            cur.execute('ALTER TABLE sports  ADD COLUMN IF NOT EXISTS started_date DATE')
             cur.execute('''
-                ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ai_feedback TEXT
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id         SERIAL PRIMARY KEY,
+                    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    user_name  TEXT,
+                    user_email TEXT,
+                    category   TEXT,
+                    message    TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             ''')
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS ai_insights (
@@ -374,7 +437,7 @@ def generate_ai_insights(sport_name, kid_name, sessions_data):
         "youtube_links": generate_youtube_links(sport_name, level, top_skills)
     }
 
-def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
+def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data, sport_started=None):
     """Generate insights via Google Gemini. Falls back to simulation if unavailable."""
     import logging
     api_key = os.environ.get('GEMINI_API_KEY')
@@ -429,14 +492,15 @@ def generate_ai_insights_gemini(sport_name, kid_name, kid_age, sessions_data):
             session_log.append(entry)
 
         age_str = f", {kid_age} years old" if kid_age else ""
+        exp_str = f"\nExperience: playing {sport_name} for {sport_started}" if sport_started else ""
 
         prompt = f"""You are an experienced youth sports development coach. A parent has been logging their child's training and you need to provide a personalised progress report.
 
 CRITICAL: The parent's written observations are the most important input. Read them carefully and make your analysis directly address what they described. Never give generic advice — be specific to this child's actual situation.
 
 Child: {kid_name}{age_str}
-Sport: {sport_name}
-Total sessions: {session_count} ({training_count} training, {comp_count} competitions)
+Sport: {sport_name}{exp_str}
+Total sessions logged: {session_count} ({training_count} training, {comp_count} competitions)
 Skills practiced: {', '.join(f'{k} ({v}x)' for k, v in skill_counts.items()) if skill_counts else 'not recorded'}
 Average mood after sessions: {f'{avg_mood}/5' if avg_mood else 'not recorded'}
 
@@ -627,14 +691,14 @@ def dashboard():
 def add_kid():
     if request.method == 'POST':
         name       = request.form.get('name', '').strip()
-        birth_year = request.form.get('birth_year', '').strip()
+        birth_date = request.form.get('birth_date', '').strip() or None
         color      = AVATAR_COLORS[hash(name) % len(AVATAR_COLORS)]
         if not name:
             flash('Name is required.', 'error')
         else:
             db_insert(
-                'INSERT INTO kids (user_id, name, birth_year, avatar_color) VALUES (%s, %s, %s, %s)',
-                (session['user_id'], name, int(birth_year) if birth_year.isdigit() else None, color)
+                'INSERT INTO kids (user_id, name, birth_date, avatar_color) VALUES (%s, %s, %s, %s)',
+                (session['user_id'], name, birth_date, color)
             )
             return redirect(url_for('dashboard'))
     return render_template('kid_form.html', action='add')
@@ -665,7 +729,7 @@ def kid_profile(kid_id):
             "last_session": last_row['last_date'] if last_row else None,
             "has_insights": bool(has_insights)
         })
-    age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
+    age = kid_age_label(kid)
     return render_template('kid.html', kid=kid, sports=sports_data, age=age, sport_limit=10)
 
 @app.route('/kids/<int:kid_id>/sports/add', methods=['GET', 'POST'])
@@ -681,8 +745,9 @@ def add_sport(kid_id):
         flash('A child can have a maximum of 10 sports.', 'error')
         return redirect(url_for('kid_profile', kid_id=kid_id))
     if request.method == 'POST':
-        sport_name  = request.form.get('sport_name', '').strip()
-        custom_name = request.form.get('custom_name', '').strip()
+        sport_name   = request.form.get('sport_name', '').strip()
+        custom_name  = request.form.get('custom_name', '').strip()
+        started_date = request.form.get('started_date', '').strip() or None
         name = custom_name if sport_name == '__custom__' else sport_name
         icon = SPORT_ICONS.get(name, '🏅')
         if not name:
@@ -695,8 +760,8 @@ def add_sport(kid_id):
                 flash(f'{kid["name"]} already has {name} added.', 'error')
             else:
                 db_insert(
-                    'INSERT INTO sports (kid_id, name, icon) VALUES (%s, %s, %s)',
-                    (kid_id, name, icon)
+                    'INSERT INTO sports (kid_id, name, icon, started_date) VALUES (%s, %s, %s, %s)',
+                    (kid_id, name, icon, started_date)
                 )
                 return redirect(url_for('kid_profile', kid_id=kid_id))
     return render_template('sport_form.html', kid=kid, sports_list=SPORTS, current_count=current_count)
@@ -913,7 +978,7 @@ def session_tip(session_id):
             'energy_level':       s['energy_level'],
             'competition_result': s['competition_result'],
         }
-        kid_age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
+        kid_age = kid_age_label(kid)
         result  = generate_session_tip_gemini(sport['name'], kid['name'], kid_age, session_data)
         if result.get('tips'):
             db_exec('UPDATE sessions SET ai_feedback = %s WHERE id = %s',
@@ -939,8 +1004,9 @@ def generate_insights(sport_id):
     )
     kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
     sessions_data = [dict(s) for s in sessions_raw]
-    kid_age = (datetime.now().year - kid['birth_year']) if kid['birth_year'] else None
-    insights = generate_ai_insights_gemini(sport['name'], kid['name'], kid_age, sessions_data)
+    kid_age    = kid_age_label(kid)
+    sport_exp  = experience_str(sport.get('started_date'))
+    insights   = generate_ai_insights_gemini(sport['name'], kid['name'], kid_age, sessions_data, sport_started=sport_exp)
 
     db_exec('''
         INSERT INTO ai_insights (sport_id, current_level, progress_summary, next_steps, youtube_links)
@@ -1038,6 +1104,45 @@ def coach_view(token):
         comp_count=sum(1 for s in sessions_list if s['session_type'] == 'competition'),
         error=None
     )
+
+# ---------------------------------------------------------------------------
+# ROUTES — FEEDBACK
+# ---------------------------------------------------------------------------
+
+FEEDBACK_CATEGORIES = [
+    ("broken",     "Something's not working 🐛"),
+    ("suggestion", "Feature request / improvement 💡"),
+]
+
+@app.route('/feedback', methods=['GET', 'POST'])
+@login_required
+def submit_feedback():
+    if request.method == 'POST':
+        category = request.form.get('category', '').strip()
+        message  = request.form.get('message', '').strip()
+        if not message:
+            flash('Please write something before submitting.', 'error')
+        else:
+            user = get_current_user()
+            db_insert(
+                '''INSERT INTO feedback (user_id, user_name, user_email, category, message)
+                   VALUES (%s, %s, %s, %s, %s)''',
+                (session['user_id'], user['name'], user['email'], category, message)
+            )
+            flash('Thanks for your feedback! 🙏', 'success')
+            return redirect(url_for('dashboard'))
+    return render_template('feedback_form.html', categories=FEEDBACK_CATEGORIES)
+
+@app.route('/admin/feedback')
+@login_required
+def admin_feedback():
+    user = get_current_user()
+    if user['email'] != 'rdumitrescu@gwi.com':
+        return redirect(url_for('dashboard'))
+    rows = db_query(
+        'SELECT * FROM feedback ORDER BY created_at DESC', ()
+    )
+    return render_template('admin_feedback.html', rows=rows, categories=dict(FEEDBACK_CATEGORIES))
 
 # ---------------------------------------------------------------------------
 # TEMPLATE FILTERS
