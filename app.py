@@ -1114,6 +1114,38 @@ FEEDBACK_CATEGORIES = [
     ("suggestion", "Feature request / improvement 💡"),
 ]
 
+FEEDBACK_EMAIL = os.environ.get('FEEDBACK_EMAIL', 'rdumitrescu@gwi.com')
+
+def _send_feedback_email(user_name, user_email, category, message):
+    """Send feedback notification via SMTP. Requires SMTP_USER + SMTP_PASSWORD env vars."""
+    import smtplib
+    from email.mime.text import MIMEText
+    import logging
+
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_pass = os.environ.get('SMTP_PASSWORD')
+    if not smtp_user or not smtp_pass:
+        logging.warning("SMTP_USER / SMTP_PASSWORD not set — skipping email")
+        return False
+
+    cat_label = dict(FEEDBACK_CATEGORIES).get(category, category)
+    subject = f"GoalDigger feedback: {cat_label}"
+    body = f"From: {user_name} ({user_email})\nCategory: {cat_label}\n\n{message}"
+
+    msg = MIMEText(body, 'plain')
+    msg['Subject'] = subject
+    msg['From']    = smtp_user
+    msg['To']      = FEEDBACK_EMAIL
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, FEEDBACK_EMAIL, msg.as_string())
+        return True
+    except Exception as e:
+        logging.error(f"Failed to send feedback email: {e}")
+        return False
+
 @app.route('/feedback', methods=['GET', 'POST'])
 @login_required
 def submit_feedback():
@@ -1124,25 +1156,17 @@ def submit_feedback():
             flash('Please write something before submitting.', 'error')
         else:
             user = get_current_user()
+            # Save to DB as backup
             db_insert(
                 '''INSERT INTO feedback (user_id, user_name, user_email, category, message)
                    VALUES (%s, %s, %s, %s, %s)''',
                 (session['user_id'], user['name'], user['email'], category, message)
             )
+            # Send email notification
+            _send_feedback_email(user['name'], user['email'], category, message)
             flash('Thanks for your feedback! 🙏', 'success')
             return redirect(url_for('dashboard'))
     return render_template('feedback_form.html', categories=FEEDBACK_CATEGORIES)
-
-@app.route('/admin/feedback')
-@login_required
-def admin_feedback():
-    user = get_current_user()
-    if user['email'] != 'rdumitrescu@gwi.com':
-        return redirect(url_for('dashboard'))
-    rows = db_query(
-        'SELECT * FROM feedback ORDER BY created_at DESC', ()
-    )
-    return render_template('admin_feedback.html', rows=rows, categories=dict(FEEDBACK_CATEGORIES))
 
 # ---------------------------------------------------------------------------
 # TEMPLATE FILTERS
