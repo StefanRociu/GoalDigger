@@ -703,6 +703,26 @@ def add_kid():
             return redirect(url_for('dashboard'))
     return render_template('kid_form.html', action='add')
 
+@app.route('/kids/<int:kid_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_kid(kid_id):
+    kid = verify_kid_ownership(kid_id)
+    if not kid:
+        return redirect(url_for('dashboard'))
+    if request.method == 'POST':
+        name       = request.form.get('name', '').strip()
+        birth_date = request.form.get('birth_date', '').strip() or None
+        if not name:
+            flash('Name is required.', 'error')
+        else:
+            db_exec(
+                'UPDATE kids SET name = %s, birth_date = %s WHERE id = %s',
+                (name, birth_date, kid_id)
+            )
+            flash(f'{name} updated.', 'success')
+            return redirect(url_for('kid_profile', kid_id=kid_id))
+    return render_template('kid_form.html', action='edit', kid=kid)
+
 @app.route('/kids/<int:kid_id>')
 @login_required
 def kid_profile(kid_id):
@@ -765,6 +785,23 @@ def add_sport(kid_id):
                 )
                 return redirect(url_for('kid_profile', kid_id=kid_id))
     return render_template('sport_form.html', kid=kid, sports_list=SPORTS, current_count=current_count)
+
+@app.route('/sports/<int:sport_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_sport(sport_id):
+    sport = verify_sport_ownership(sport_id)
+    if not sport:
+        return redirect(url_for('dashboard'))
+    kid = db_query('SELECT * FROM kids WHERE id = %s', (sport['kid_id'],), one=True)
+    if request.method == 'POST':
+        started_date = request.form.get('started_date', '').strip() or None
+        db_exec(
+            'UPDATE sports SET started_date = %s WHERE id = %s',
+            (started_date, sport_id)
+        )
+        flash(f'{sport["name"]} updated.', 'success')
+        return redirect(url_for('sport_detail', sport_id=sport_id))
+    return render_template('sport_edit.html', sport=sport, kid=kid)
 
 # ---------------------------------------------------------------------------
 # ROUTES — SPORT DETAIL & SESSIONS

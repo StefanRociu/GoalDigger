@@ -1,23 +1,26 @@
 {% extends 'base.html' %}
-{% block title %}Add Child — GoalDigger{% endblock %}
+{% block title %}{{ 'Edit ' + kid.name if action == 'edit' else 'Add Child' }} — GoalDigger{% endblock %}
 
 {% block content %}
 <div class="px-4 pt-6">
   <!-- Back -->
-  <a href="{{ url_for('dashboard') }}" class="inline-flex items-center gap-1.5 text-sm text-slate-500 mb-6">
+  <a href="{{ url_for('kid_profile', kid_id=kid.id) if action == 'edit' else url_for('dashboard') }}"
+    class="inline-flex items-center gap-1.5 text-sm text-slate-500 mb-6">
     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
     </svg>
     Back
   </a>
 
-  <h1 class="text-2xl font-bold text-slate-800 mb-6">Add a child</h1>
+  <h1 class="text-2xl font-bold text-slate-800 mb-6">
+    {{ 'Edit ' + kid.name if action == 'edit' else 'Add a child' }}
+  </h1>
 
   <form method="POST" class="space-y-5">
     <div>
       <label class="block text-sm font-medium text-slate-700 mb-1.5">Child's name <span
           class="text-red-400">*</span></label>
-      <input type="text" name="name" required autofocus class="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 text-base
+      <input type="text" name="name" required autofocus value="{{ kid.name if action == 'edit' else '' }}" class="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 text-base
                     focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent
                     placeholder-slate-300" placeholder="e.g. Emma" />
     </div>
@@ -26,7 +29,8 @@
       <label class="block text-sm font-medium text-slate-700 mb-1.5">
         Date of birth <span class="text-slate-400 font-normal">(optional)</span>
       </label>
-      <input type="date" name="birth_date" class="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 text-base
+      <input type="date" name="birth_date"
+        value="{{ kid.birth_date.isoformat() if action == 'edit' and kid.birth_date else '' }}" class="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 text-base
                     focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent" />
       <p class="text-xs text-slate-400 mt-1.5">Used to give Gemini the child's precise age for better coaching tips.</p>
     </div>
@@ -34,7 +38,7 @@
     <div class="pt-2">
       <button type="submit" class="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white
                      font-semibold py-3.5 rounded-xl transition text-base">
-        Add child
+        {{ 'Save changes' if action == 'edit' else 'Add child' }}
       </button>
     </div>
   </form>
