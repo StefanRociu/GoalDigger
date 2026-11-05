@@ -10,7 +10,10 @@ from datetime import datetime
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'goaldigger-change-this-in-production')
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    raise RuntimeError('SECRET_KEY environment variable is not set')
+app.secret_key = SECRET_KEY
 
 # ---------------------------------------------------------------------------
 # HELPER — age / experience calculations
