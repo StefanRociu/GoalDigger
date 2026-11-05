@@ -1154,18 +1154,18 @@ FEEDBACK_CATEGORIES = [
     ("suggestion", "Feature request / improvement 💡"),
 ]
 
-FEEDBACK_EMAIL = os.environ.get('FEEDBACK_EMAIL', 'rdumitrescu@gwi.com')
+FEEDBACK_EMAIL = os.environ.get('FEEDBACK_EMAIL', '')
 
 def _send_feedback_email(user_name, user_email, category, message):
-    """Send feedback notification via SMTP. Requires SMTP_USER + SMTP_PASSWORD env vars."""
+    """Send feedback notification via SMTP. Requires SMTP_USER, SMTP_PASSWORD and FEEDBACK_EMAIL env vars."""
     import smtplib
     from email.mime.text import MIMEText
     import logging
 
     smtp_user = os.environ.get('SMTP_USER')
     smtp_pass = os.environ.get('SMTP_PASSWORD')
-    if not smtp_user or not smtp_pass:
-        logging.warning("SMTP_USER / SMTP_PASSWORD not set — skipping email")
+    if not smtp_user or not smtp_pass or not FEEDBACK_EMAIL:
+        logging.warning("SMTP_USER / SMTP_PASSWORD / FEEDBACK_EMAIL not set — skipping email")
         return False
 
     cat_label = dict(FEEDBACK_CATEGORIES).get(category, category)
@@ -1178,7 +1178,8 @@ def _send_feedback_email(user_name, user_email, category, message):
     msg['To']      = FEEDBACK_EMAIL
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        # timeout stops a blocked or slow connection from hanging forever
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=10) as server:
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, FEEDBACK_EMAIL, msg.as_string())
         return True
@@ -1202,8 +1203,13 @@ def submit_feedback():
                    VALUES (%s, %s, %s, %s, %s)''',
                 (session['user_id'], user['name'], user['email'], category, message)
             )
-            # Send email notification
-            _send_feedback_email(user['name'], user['email'], category, message)
+            # Send email notification in the background so the page never waits on SMTP
+            import threading
+            threading.Thread(
+                target=_send_feedback_email,
+                args=(user['name'], user['email'], category, message),
+                daemon=True,
+            ).start()
             flash('Thanks for your feedback! 🙏', 'success')
             return redirect(url_for('dashboard'))
     return render_template('feedback_form.html', categories=FEEDBACK_CATEGORIES)
