@@ -8,12 +8,65 @@ import json
 import secrets
 from datetime import datetime
 from functools import wraps
+from cryptography.fernet import Fernet, MultiFernet, InvalidToken
 
 app = Flask(__name__)
 SECRET_KEY = os.environ.get('SECRET_KEY')
 if not SECRET_KEY:
     raise RuntimeError('SECRET_KEY environment variable is not set')
 app.secret_key = SECRET_KEY
+
+
+# ---------------------------------------------------------------------------
+# FIELD ENCRYPTION — parent notes are stored encrypted in the database
+# ---------------------------------------------------------------------------
+
+_ENC_PREFIX = 'enc1:'
+
+def _build_fernet():
+    raw = os.environ.get('DATA_ENCRYPTION_KEY', '')
+    keys = [k.strip() for k in raw.split(',') if k.strip()]
+    if not keys:
+        raise RuntimeError('DATA_ENCRYPTION_KEY environment variable is not set')
+    # The first key encrypts; every key can decrypt (allows key rotation)
+    return MultiFernet([Fernet(k) for k in keys])
+
+_fernet = _build_fernet()
+
+def encrypt_text(value):
+    """Encrypt a string for storage. None and empty values pass through unchanged."""
+    if not value:
+        return value
+    return _ENC_PREFIX + _fernet.encrypt(value.encode('utf-8')).decode('ascii')
+
+def decrypt_text(value):
+    """Decrypt a stored string. Values saved before encryption was added are returned as they are."""
+    if not value or not isinstance(value, str) or not value.startswith(_ENC_PREFIX):
+        return value
+    try:
+        return _fernet.decrypt(value[len(_ENC_PREFIX):].encode('ascii')).decode('utf-8')
+    except InvalidToken:
+        raise RuntimeError('Could not decrypt stored data: DATA_ENCRYPTION_KEY does not match')
+
+def _decrypt_row(row):
+    if row is not None and 'notes' in row:
+        row['notes'] = decrypt_text(row['notes'])
+    return row
+
+def encrypt_existing_notes():
+    """Safe to run on every start: encrypts any notes saved before encryption was added."""
+    conn = psycopg2.connect(_db_url())
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, notes FROM sessions WHERE notes IS NOT NULL AND notes <> '' AND notes NOT LIKE %s",
+                (_ENC_PREFIX + '%',)
+            )
+            for row_id, plain in cur.fetchall():
+                cur.execute('UPDATE sessions SET notes = %s WHERE id = %s', (encrypt_text(plain), row_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 # ---------------------------------------------------------------------------
 # HELPER — age / experience calculations
@@ -148,11 +201,14 @@ def get_connection():
     return g.db_conn
 
 def db_query(sql, params=None, one=False):
-    """Execute a SELECT and return dict-style rows."""
+    """Execute a SELECT and return dict-style rows (encrypted notes are decrypted here)."""
     conn = get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params)
-        return cur.fetchone() if one else cur.fetchall()
+        result = cur.fetchone() if one else cur.fetchall()
+    if one:
+        return _decrypt_row(result)
+    return [_decrypt_row(r) for r in result]
 
 def db_exec(sql, params=None):
     """Execute a write statement (INSERT/UPDATE/DELETE)."""
@@ -889,7 +945,7 @@ def add_session(sport_id):
         mood_after   = request.form.get('mood_after') or None
         energy_level = request.form.get('energy_level') or None
         comp_result  = request.form.get('competition_result') or None
-        notes        = request.form.get('notes', '').strip() or None
+        notes        = encrypt_text(request.form.get('notes', '').strip() or None)
 
         try:
             skills_list = json.loads(skills_raw)
@@ -949,7 +1005,7 @@ def edit_session(session_id):
         mood_after   = request.form.get('mood_after') or None
         energy_level = request.form.get('energy_level') or None
         comp_result  = request.form.get('competition_result') or None
-        notes        = request.form.get('notes', '').strip() or None
+        notes        = encrypt_text(request.form.get('notes', '').strip() or None)
         try:
             skills_list = json.loads(skills_raw)
             if not isinstance(skills_list, list):
@@ -1259,6 +1315,7 @@ def format_date(val):
 # ---------------------------------------------------------------------------
 
 init_db()
+encrypt_existing_notes()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
